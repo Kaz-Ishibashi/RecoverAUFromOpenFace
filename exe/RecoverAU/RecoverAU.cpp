@@ -133,12 +133,37 @@ bool LoadLandmarks(const string& csv_path, vector<Mat_<float>>& all_landmarks) {
     }
 
     string line;
-    // Skip header
+    // Read header
     if (!getline(file, line)) {
         cerr << "Error: Landmark file appears empty." << endl;
         return false;
     }
-    cout << "Debug: Header skipped. Reading lines..." << endl;
+    
+    // Parse Header to find "x_0" and "y_0"
+    int x_start = -1;
+    int y_start = -1;
+    {
+        stringstream ss(line);
+        string val_str;
+        int col_idx = 0;
+        while (getline(ss, val_str, ',')) {
+            // Trim whitespace
+            val_str.erase(0, val_str.find_first_not_of(" \t\r\n"));
+            val_str.erase(val_str.find_last_not_of(" \t\r\n") + 1);
+            
+            if (val_str == "x_0") x_start = col_idx;
+            if (val_str == "y_0") y_start = col_idx;
+            col_idx++;
+        }
+    }
+
+    if (x_start == -1 || y_start == -1) {
+        cerr << "Error: Could not find 'x_0' or 'y_0' columns in CSV header." << endl;
+        cerr << "Header was: " << line.substr(0, 100) << "..." << endl;
+        return false;
+    }
+
+    cout << "Debug: Found landmarks at x_start=" << x_start << ", y_start=" << y_start << endl;
 
     int row_count = 0;
     while (getline(file, line)) {
@@ -151,24 +176,25 @@ bool LoadLandmarks(const string& csv_path, vector<Mat_<float>>& all_landmarks) {
                 try {
                     values.push_back(stof(val_str));
                 } catch (...) {
-                     // ignore parse errors for now
+                     values.push_back(0.0f); // Default to 0 on error
                 }
+            } else {
+                values.push_back(0.0f); // Handle empty fields
             }
         }
 
-        // Check if we have enough data (frame + face_id + 68*2 points = 138 columns minimum)
-        if (values.size() < 138) {
+        // Check bounds
+        // We need at least up to max(x_start, y_start) + 67
+        int required_cols = std::max(x_start, y_start) + 68;
+        if (values.size() < required_cols) {
             continue; 
         }
 
         Mat_<float> landmarks(2, 68);
         
-        // Assumption: format is frame, x1, y1, ... x68, y68 (interleaved)
-        int landmark_start_idx = 1; // After frame number
-        
         for(int i=0; i<68; ++i) {
-            landmarks(0, i) = values[landmark_start_idx + i*2];     // x_i
-            landmarks(1, i) = values[landmark_start_idx + i*2 + 1]; // y_i
+            landmarks(0, i) = values[x_start + i]; // x_0 ... x_67
+            landmarks(1, i) = values[y_start + i]; // y_0 ... y_67
         }
         
         all_landmarks.push_back(landmarks);
@@ -194,7 +220,7 @@ int main(int argc, char** argv) {
     string output_file = argv[3];
 
     // 1. Load HOG Data (Custom Format)
-    cout << "Debug: Loading HOG file: " << hog_file << endl;
+    // cout << "Debug: Loading HOG file: " << hog_file << endl;
     vector<RawHOGFrame> hog_frames;
     
     try {
@@ -204,7 +230,7 @@ int main(int argc, char** argv) {
              return 1;
         }
 
-        cout << "Debug: Reading custom HOG frames..." << endl;
+        // cout << "Debug: Reading custom HOG frames..." << endl;
         while (true) {
             RawHOGFrame frame;
             if (ReadHOGFrame(fin, frame)) {
@@ -227,7 +253,7 @@ int main(int argc, char** argv) {
     }
 
     // 2. Load Landmarks
-    cout << "Debug: Loading Landmarks file: " << landmark_file << endl;
+    // cout << "Debug: Loading Landmarks file: " << landmark_file << endl;
     vector<Mat_<float>> landmarks_data;
     if (!LoadLandmarks(landmark_file, landmarks_data)) {
         cerr << "Error: Failed to load landmarks." << endl;
@@ -251,7 +277,7 @@ int main(int argc, char** argv) {
     cout << "Debug: Processing " << num_frames << " frames." << endl;
 
     // 3. Initialize FaceAnalyser
-    cout << "Debug: Initializing FaceAnalyser..." << endl;
+    // cout << "Debug: Initializing FaceAnalyser..." << endl;
     
     // Construct arguments to pass to FaceAnalyserParameters
     // We pass argv[0] so it can find the root directory.
@@ -269,7 +295,7 @@ int main(int argc, char** argv) {
     vector<string> fa_args;
     fa_args.push_back(string(argv[0]));
     // If user wants static, add "-au_static"? User requested static before.
-    fa_args.push_back("-au_static"); 
+    // fa_args.push_back("-au_static"); // Commented out to match default Dynamic behavior 
     
     FaceAnalyserParameters fa_params(fa_args);
 
@@ -351,6 +377,11 @@ int main(int argc, char** argv) {
             // My LoadLandmarks creates (2, 68). THIS IS THE TYPE ERROR!
             // I need to reshape/transpose it to (136, 1).
             
+            // -----------------------------------------------------------------------
+            // PDM Parameter Calculation (The Core "Normalization" Step)
+            // -----------------------------------------------------------------------
+            
+            // Format landmarks for PDM::CalcParams: Column vector (2*n x 1), [x0...xn, y0...yn]
             Mat_<float> shape_2d_formatted(face_analyser.pdm.NumberOfPoints() * 2, 1);
             for(int k=0; k<face_analyser.pdm.NumberOfPoints(); ++k) {
                 shape_2d_formatted(k, 0) = shape_2d(0, k); // x
@@ -362,29 +393,36 @@ int main(int argc, char** argv) {
             
             face_analyser.pdm.CalcParams(params_global, params_local, shape_2d_formatted);
             
-            // ★重要修正: OpenFaceのFaceAnalyser.cppと同じgeom_descriptor構造を使用
-            // FaceAnalyserの正しい構造: [locs (princ_comp * local) | local] = [204 | 34] = 238次元
-            // 旧コード(間違い): [pose(4) | local(34)] = 38次元 → means(4702)と不一致
+            if (i == 0) {
+                double min_p, max_p;
+                cv::minMaxLoc(params_local, &min_p, &max_p);
+                cout << "Debug: Frame 0 params_local - Min: " << min_p << ", Max: " << max_p << endl;
+                cout << "Debug: Frame 0 params_global - Scale: " << params_global[0] << ", Tx: " << params_global[4] << ", Ty: " << params_global[5] << endl;
+                cout << "Debug: Landmarks (formatted) First 4: " << shape_2d_formatted(0,0) << ", " << shape_2d_formatted(1,0) << ", " << shape_2d_formatted(68,0) << ", " << shape_2d_formatted(69,0) << endl; 
+            }
+
+            // geom_descriptor construction: [locs | local_params]
+            // Note: PDM in OpenFace is 3D (X,Y,Z), so princ_comp is (3*n x num_params) -> (204 x 34)
             
-            // params_localを転置して行ベクトルに
+            // params_local (Col Vector) -> Row Vector
             Mat_<double> local_params_row;
             params_local.convertTo(local_params_row, CV_64F);
-            local_params_row = local_params_row.t(); // 1 x 34 行ベクトル
+            local_params_row = local_params_row.t(); // 1 x 34
             
-            // princ_comp を double に変換
+            // princ_comp conversion
             Mat_<double> princ_comp_d;
             face_analyser.pdm.princ_comp.convertTo(princ_comp_d, CV_64F);
             
-            // locs = princ_comp (204x34) * local_params (34x1) = (204x1)
-            Mat_<double> locs = princ_comp_d * local_params_row.t();
+            // Calculate shape deviations (non-rigid)
+            Mat_<double> locs = princ_comp_d * local_params_row.t(); // (204x34) * (34x1) = (204x1)
             
-            // geom_descriptor_frame = [locs.t() (1x204) | local_params (1x34)] = 1x238
+            // Concatenate
             Mat_<double> geom_desc;
             cv::hconcat(locs.t(), local_params_row, geom_desc);
             
             face_analyser.geom_descriptor_frame = geom_desc.clone();
-
-            // 念のためGeomが横長であることを確認（縦長なら転置）
+            
+            // Ensure Row vector (1 x 238)
             if (face_analyser.geom_descriptor_frame.rows > face_analyser.geom_descriptor_frame.cols) {
                 face_analyser.geom_descriptor_frame = face_analyser.geom_descriptor_frame.t();
             }
@@ -392,26 +430,30 @@ int main(int argc, char** argv) {
             // D. Timestamp
             face_analyser.current_time_seconds = (double)i * 0.033; 
             
-            // ★重要: Dynamic model用のRunning Median更新
-            // OpenFaceのAddNextFrameと同様に中央値を更新
-            // これがないとdynamic modelが正しく機能しない
+            // Running Median Updates (Critical for Dynamic Models)
+            // OpenFace logic: Update median every frame (or decimated) IF SUCCESSFUL
+            
+            bool hog_success = hog_frames[i].good_frame;
+            bool land_success = (cv::countNonZero(shape_2d) > 0); // Check if we have valid landmarks
+            bool success = hog_success && land_success;
+
             face_analyser.frames_tracking++;
             
-            // HOG medianを更新（2フレームに1回、高速化のため）
-            if (face_analyser.frames_tracking % 2 == 1) {
+            if (success && (face_analyser.frames_tracking % 2 == 1)) {
+                // Update HOG median
                 face_analyser.UpdateRunningMedian(
-                    face_analyser.hog_desc_hist[0],  // view 0を使用
+                    face_analyser.hog_desc_hist[0],
                     face_analyser.hog_hist_sum[0],
                     face_analyser.hog_desc_median,
                     face_analyser.hog_desc_frame,
-                    true,  // update
+                    true,
                     face_analyser.num_bins_hog,
                     face_analyser.min_val_hog,
                     face_analyser.max_val_hog
                 );
                 face_analyser.hog_desc_median.setTo(0, face_analyser.hog_desc_median < 0);
                 
-                // Geom medianを更新
+                // Update Geom median
                 face_analyser.UpdateRunningMedian(
                     face_analyser.geom_desc_hist,
                     face_analyser.geom_hist_sum,
