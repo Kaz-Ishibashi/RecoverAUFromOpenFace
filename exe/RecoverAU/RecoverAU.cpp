@@ -73,40 +73,48 @@ bool ReadHOGFrame(ifstream& fin, RawHOGFrame& frame) {
     int total_elements = frame.num_cols * frame.num_rows * frame.num_channels;
     if (total_elements <= 0) return false;
 
-    // Data is stored as float, we need double for FaceAnalyser/dlib
+    // Data is stored as float in the file
     vector<float> raw_data(total_elements);
+    // Assume file is written in standard Raster Order (Row-Major):
+    // Outer: Rows (x=0..num_rows-1)
+    // Inner: Cols (y=0..num_cols-1)
+    // Deepest: Channels
+    // Index = row * num_cols * chans + col * chans + ch
     fin.read((char*)raw_data.data(), total_elements * 4);
     
     // Check read success
     if (!fin) return false;
 
-    // Convert to Mat_<double>
-    // RecorderHOG writes: for y (cols) { for x (rows) { for o (31) { ... } } }
-    // This looks like Column-Major in terms of spatial iteration?
-    // dlib uses row-major usually, but let's look at how we construct the dlib matrix later.
-    // FaceAnalyser expects a specific format.
-    // Let's just store it linearly for now and construct logic later.
-    // FaceAnalyser::hog_desc_frame is cv::Mat_<double>.
-    // Usually it expects a flattened row vector or similar?
-    // Let's check FaceAnalyser: getLatestHOG returns hog_desc_frame.
-    // In FaceAnalyser.cpp: "hog_descriptor = this->hog_desc_frame.clone();"
-    // HOG descriptors in OpenFace are typically computed by dlib, then converted to Mat.
-    // dlib::extract_fhog_feature returns matrix<double, 0, 1> (column vec) OR matrix<double> (spatial).
-    
-    // BUT RecorderHOG writes specific loops.
-    // To restore it exactly as dlib would have it, we need to match the loops.
-    // However, for FaceAnalyser, we just need to pass the Mat.
-    // FaceAnalyser uses: "hog_desc_frame.t()" sometimes?
-    // Let's look at how FaceAnalyser USES it.
-    // It passes it to SVM/SVR. These usually take a simple 1D vector (row or col).
-    // If RecorderHOG dumped it linearly, we can just load it linearly into a 1-row or 1-col Mat.
-    
-    // We will create a Row vector (1 x N) or Col vector (N x 1).
-    // Let's stick to simple layout first: 1 x TotalElements.
+    // Convert to Mat_<double> and Permute to OpenFace Layout
+    // OpenFace (Face_utils.cpp: Extract_FHOG_descriptor) flattens as:
+    // Outer: Cols (y=0..num_cols-1)
+    // Inner: Rows (x=0..num_rows-1)
+    // Deepest: Channels
+    // Target Index = col * num_rows * chans + row * chans + ch
     
     frame.hog_data.create(1, total_elements);
-    for(size_t i=0; i<total_elements; ++i) {
-        frame.hog_data(0, i) = (double)raw_data[i];
+    
+    int num_rows = frame.num_rows;
+    int num_cols = frame.num_cols;
+    int num_channels = frame.num_channels;
+
+    for (int y = 0; y < num_cols; ++y) { // Col matches OpenFace outer
+        for (int x = 0; x < num_rows; ++x) { // Row matches OpenFace inner
+            for (int ch = 0; ch < num_channels; ++ch) {
+                
+                // Destination Index (Col-Major linear)
+                // Since we fill standard linear buffer: dest_idx++;
+                int dest_idx = y * (num_rows * num_channels) + x * num_channels + ch;
+                
+                // Source Index (Row-Major assumption from file)
+                // src_idx = x * (num_cols * num_channels) + y * num_channels + ch;
+                int src_idx = x * (num_cols * num_channels) + y * num_channels + ch;
+                
+                if (dest_idx < total_elements && src_idx < total_elements) {
+                    frame.hog_data(0, dest_idx) = (double)raw_data[src_idx];
+                }
+            }
+        }
     }
     
     return true;
@@ -302,16 +310,16 @@ int main(int argc, char** argv) {
         // Write Header
         out_file << "frame,timestamp";
         auto au_names = face_analyser.GetAUClassNames();
-        for (const auto& au : au_names) out_file << ",AU" << au << "_c";
+        for (const auto& au : au_names) out_file << "," << au << "_c";
         auto au_reg_names = face_analyser.GetAURegNames();
-        for (const auto& au : au_reg_names) out_file << ",AU" << au << "_r";
+        for (const auto& au : au_reg_names) out_file << "," << au << "_r";
         out_file << endl;
 
         // 4. Processing Loop
         cout << "Debug: Starting processing loop..." << endl;
         
         for (size_t i = 0; i < num_frames; ++i) {
-            if (i % 100 == 0) cout << "Debug: Processing frame " << i << "/" << num_frames << endl;
+            // if (i % 100 == 0) cout << "Debug: Processing frame " << i << "/" << num_frames << endl;
 
             // A. HOG
             // Set dimensions
@@ -383,25 +391,86 @@ int main(int argc, char** argv) {
 
             // D. Timestamp
             face_analyser.current_time_seconds = (double)i * 0.033; 
+            
+            // ★重要: Dynamic model用のRunning Median更新
+            // OpenFaceのAddNextFrameと同様に中央値を更新
+            // これがないとdynamic modelが正しく機能しない
+            face_analyser.frames_tracking++;
+            
+            // HOG medianを更新（2フレームに1回、高速化のため）
+            if (face_analyser.frames_tracking % 2 == 1) {
+                face_analyser.UpdateRunningMedian(
+                    face_analyser.hog_desc_hist[0],  // view 0を使用
+                    face_analyser.hog_hist_sum[0],
+                    face_analyser.hog_desc_median,
+                    face_analyser.hog_desc_frame,
+                    true,  // update
+                    face_analyser.num_bins_hog,
+                    face_analyser.min_val_hog,
+                    face_analyser.max_val_hog
+                );
+                face_analyser.hog_desc_median.setTo(0, face_analyser.hog_desc_median < 0);
+                
+                // Geom medianを更新
+                face_analyser.UpdateRunningMedian(
+                    face_analyser.geom_desc_hist,
+                    face_analyser.geom_hist_sum,
+                    face_analyser.geom_descriptor_median,
+                    face_analyser.geom_descriptor_frame,
+                    true,  // update
+                    face_analyser.num_bins_geom,
+                    face_analyser.min_val_geom,
+                    face_analyser.max_val_geom
+                );
+            }
 
             // E. Predict
-            cout << "Debug: HOG dims: " << face_analyser.hog_desc_frame.cols << " x " << face_analyser.hog_desc_frame.rows << endl;
-            cout << "Debug: Geom dims: " << face_analyser.geom_descriptor_frame.cols << " x " << face_analyser.geom_descriptor_frame.rows << endl;
-            face_analyser.PredictCurrentAUs(0);
+            if (i == 0) {
+                 double min_h, max_h;
+                 cv::minMaxLoc(face_analyser.hog_desc_frame, &min_h, &max_h);
+                 Scalar mean_h = cv::mean(face_analyser.hog_desc_frame);
+                 cout << "Debug: Frame 0 HOG Stats - Min: " << min_h << ", Max: " << max_h << ", Mean: " << mean_h[0] << endl;
+                 cout << "Debug: HOG dims: " << face_analyser.hog_desc_frame.cols << " x " << face_analyser.hog_desc_frame.rows << endl;
+                 cout << "Debug: Geom dims: " << face_analyser.geom_descriptor_frame.cols << " x " << face_analyser.geom_descriptor_frame.rows << endl;
+
+                 // --- Geometry Descriptor Inspection ---
+                 double min_g, max_g;
+                 cv::minMaxLoc(face_analyser.geom_descriptor_frame, &min_g, &max_g);
+                 Scalar mean_g = cv::mean(face_analyser.geom_descriptor_frame);
+                 cout << "Debug: Frame 0 Geom Stats - Min: " << min_g << ", Max: " << max_g << ", Mean: " << mean_g[0] << endl;
+                 
+                 // Print first few values to see if they look like pixels or normalized params
+                 cout << "Debug: Frame 0 Geom First 10 vals: ";
+                 for(int k=0; k<10 && k<face_analyser.geom_descriptor_frame.cols; ++k) {
+                     cout << face_analyser.geom_descriptor_frame.at<double>(0, k) << " ";
+                 }
+                 cout << endl;
+                 // --------------------------------------
+            }
+
+            // PredictCurrentAUs returns the predictions directly, it does NOT populate AU_predictions_reg member
+            // PredictCurrentAUsClass returns classifications, it does NOT populate AU_predictions_class member
+            auto preds_r = face_analyser.PredictCurrentAUs(0);
+            auto preds_c = face_analyser.PredictCurrentAUsClass(0);
+            
+            // if (i == 0) cout << "Debug: preds_r size=" << preds_r.size() << ", preds_c size=" << preds_c.size() << endl;
 
             // F. Write Result
             out_file << i << "," << face_analyser.current_time_seconds;
             
-            auto preds_c = face_analyser.GetCurrentAUsClass();
             for (const auto& p : preds_c) out_file << "," << p.second;
-            
-            auto preds_r = face_analyser.GetCurrentAUsReg();
-            for (const auto& p : preds_r) out_file << "," << p.second;
+            for (auto& p : preds_r) {
+                // Post-processing: Clamp to [0, 5]
+                double val = p.second;
+                if (val < 0.0) val = 0.0;
+                if (val > 5.0) val = 5.0;
+                out_file << "," << val;
+            }
             
             out_file << endl;
         }
 
-        cout << "Debug: Loop finished." << endl;
+        // cout << "Debug: Loop finished." << endl;
 
     } catch (std::exception& e) {
         cerr << "Error: Exception in processing loop/initialization: " << e.what() << endl;
