@@ -14,19 +14,19 @@
 //       reports and manuals, must cite at least one of the following works:
 //
 //       OpenFace 2.0: Facial Behavior Analysis Toolkit
-//       Tadas Baltru�aitis, Amir Zadeh, Yao Chong Lim, and Louis-Philippe Morency
+//       Tadas Baltrušaitis, Amir Zadeh, Yao Chong Lim, and Louis-Philippe Morency
 //       in IEEE International Conference on Automatic Face and Gesture Recognition, 2018  
 //
 //       Convolutional experts constrained local model for facial landmark detection.
-//       A. Zadeh, T. Baltru�aitis, and Louis-Philippe Morency,
+//       A. Zadeh, T. Baltrušaitis, and Louis-Philippe Morency,
 //       in Computer Vision and Pattern Recognition Workshops, 2017.    
 //
 //       Rendering of Eyes for Eye-Shape Registration and Gaze Estimation
-//       Erroll Wood, Tadas Baltru�aitis, Xucong Zhang, Yusuke Sugano, Peter Robinson, and Andreas Bulling 
+//       Erroll Wood, Tadas Baltrušaitis, Xucong Zhang, Yusuke Sugano, Peter Robinson, and Andreas Bulling 
 //       in IEEE International. Conference on Computer Vision (ICCV),  2015 
 //
 //       Cross-dataset learning and person-specific normalisation for automatic Action Unit detection
-//       Tadas Baltru�aitis, Marwa Mahmoud, and Peter Robinson 
+//       Tadas Baltrušaitis, Marwa Mahmoud, and Peter Robinson 
 //       in Facial Expression Recognition and Analysis Challenge, 
 //       IEEE International Conference on Automatic Face and Gesture Recognition, 2015 
 //
@@ -101,6 +101,12 @@ void SVM_static_lin::Read(std::ifstream& stream, const std::vector<std::string>&
 // Prediction using the HOG descriptor
 void SVM_static_lin::Predict(std::vector<double>& predictions, std::vector<std::string>& names, const cv::Mat_<double>& fhog_descriptor, const cv::Mat_<double>& geom_params)
 {
+	// DEBUG: 次元不一致デバッグ用出力 / Debug output for dimension mismatch diagnosis
+	std::cout << "Debug [SVM_static_lin]: HOG=" << fhog_descriptor.rows << "x" << fhog_descriptor.cols 
+	          << ", Geom=" << geom_params.rows << "x" << geom_params.cols
+	          << ", means=" << this->means.rows << "x" << this->means.cols 
+	          << ", support_vectors=" << this->support_vectors.rows << "x" << this->support_vectors.cols << std::endl;
+	
 	if(AU_names.size() > 0)
 	{
 		cv::Mat_<double> preds;

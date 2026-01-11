@@ -8,14 +8,6 @@
 // This program recovers Action Units (AUs) from pre-computed HOG features (dlib format) and Facial Landmarks (CSV).
 // It bypasses the standard image processing pipeline by injecting these features directly into the FaceAnalyser class.
 //
-// 目的:
-// 本プログラムは、事前に計算されたHOG特徴量（dlib形式）と顔ランドマーク（CSV）から、Action Unit (AU) をリカバリーします。
-// これらの特徴量をFaceAnalyserクラスに直接注入することで、標準的な画像処理パイプラインをバイパスします。
-//
-// Requirements:
-// - Modified FaceAnalyser.h (exposed private members) / 修正されたFaceAnalyser.h（privateメンバの公開）
-// - dlib HOG file / dlib HOGファイル
-// - Landmark CSV file / ランドマークCSVファイル
 // -------------------------------------------------------------------------------------------------------------------
 
 // C++ Standard Libraries
@@ -24,10 +16,9 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <algorithm> // For min
 
 // OpenFace Headers
-// Note: Ensure include paths are correctly configured in Visual Studio
-// 注意: Visual Studioでインクルードパスが正しく設定されていることを確認してください
 #include "FaceAnalyser.h"
 #include "LandmarkDetectorUtils.h" // For PDM and utils
 
@@ -46,63 +37,136 @@ using namespace cv;
 using namespace FaceAnalysis;
 
 // -------------------------------------------------------------------------------------------------------------------
+// HOG Reading Helper
+// -------------------------------------------------------------------------------------------------------------------
+// RecorderHOG Format:
+// int num_cols (4 bytes)
+// int num_rows (4 bytes)
+// int num_channels (4 bytes)
+// float good_frame (4 bytes)
+// float data[] (rows * cols * channels * 4 bytes) - Row Major? RecorderHOG iterates y(cols), x(rows), o(31) which suggests Col-Major logic but it writes linearly.
+// Let's assume standard looping: y(0..cols), x(0..rows), o(0..31)
+
+struct RawHOGFrame {
+    int num_cols;
+    int num_rows;
+    int num_channels;
+    bool good_frame;
+    cv::Mat_<double> hog_data; // Converted to double for usage
+};
+
+bool ReadHOGFrame(ifstream& fin, RawHOGFrame& frame) {
+    if (!fin.good() || fin.peek() == EOF) return false;
+
+    // Read Dimensions
+    fin.read((char*)&frame.num_cols, 4);
+    if (!fin) return false;
+    fin.read((char*)&frame.num_rows, 4);
+    fin.read((char*)&frame.num_channels, 4);
+
+    // Read Good Frame flag (stored as float)
+    float good_frame_float;
+    fin.read((char*)&good_frame_float, 4);
+    frame.good_frame = (good_frame_float > 0);
+
+    // Read Data
+    int total_elements = frame.num_cols * frame.num_rows * frame.num_channels;
+    if (total_elements <= 0) return false;
+
+    // Data is stored as float, we need double for FaceAnalyser/dlib
+    vector<float> raw_data(total_elements);
+    fin.read((char*)raw_data.data(), total_elements * 4);
+    
+    // Check read success
+    if (!fin) return false;
+
+    // Convert to Mat_<double>
+    // RecorderHOG writes: for y (cols) { for x (rows) { for o (31) { ... } } }
+    // This looks like Column-Major in terms of spatial iteration?
+    // dlib uses row-major usually, but let's look at how we construct the dlib matrix later.
+    // FaceAnalyser expects a specific format.
+    // Let's just store it linearly for now and construct logic later.
+    // FaceAnalyser::hog_desc_frame is cv::Mat_<double>.
+    // Usually it expects a flattened row vector or similar?
+    // Let's check FaceAnalyser: getLatestHOG returns hog_desc_frame.
+    // In FaceAnalyser.cpp: "hog_descriptor = this->hog_desc_frame.clone();"
+    // HOG descriptors in OpenFace are typically computed by dlib, then converted to Mat.
+    // dlib::extract_fhog_feature returns matrix<double, 0, 1> (column vec) OR matrix<double> (spatial).
+    
+    // BUT RecorderHOG writes specific loops.
+    // To restore it exactly as dlib would have it, we need to match the loops.
+    // However, for FaceAnalyser, we just need to pass the Mat.
+    // FaceAnalyser uses: "hog_desc_frame.t()" sometimes?
+    // Let's look at how FaceAnalyser USES it.
+    // It passes it to SVM/SVR. These usually take a simple 1D vector (row or col).
+    // If RecorderHOG dumped it linearly, we can just load it linearly into a 1-row or 1-col Mat.
+    
+    // We will create a Row vector (1 x N) or Col vector (N x 1).
+    // Let's stick to simple layout first: 1 x TotalElements.
+    
+    frame.hog_data.create(1, total_elements);
+    for(size_t i=0; i<total_elements; ++i) {
+        frame.hog_data(0, i) = (double)raw_data[i];
+    }
+    
+    return true;
+}
+
+
+// -------------------------------------------------------------------------------------------------------------------
 // Helper Function: Load Landmarks from CSV
-// ヘルパー関数: CSVからランドマークを読み込む
-// Format assumption: frame, face_id, x_0, y_0, ... x_67, y_67 (OpenFace standard)
-// 前提フォーマット: frame, face_id, x_0, y_0, ... x_67, y_67 (OpenFace標準)
 // -------------------------------------------------------------------------------------------------------------------
 bool LoadLandmarks(const string& csv_path, vector<Mat_<float>>& all_landmarks) {
+    cout << "Debug: Opening landmark file: " << csv_path << endl;
     ifstream file(csv_path);
     if (!file.is_open()) {
         cerr << "Error: Could not open landmark file: " << csv_path << endl;
-        cerr << "エラー: ランドマークファイルを開けませんでした: " << csv_path << endl;
         return false;
     }
 
     string line;
-    // Skip header / ヘッダーをスキップ
-    getline(file, line); 
+    // Skip header
+    if (!getline(file, line)) {
+        cerr << "Error: Landmark file appears empty." << endl;
+        return false;
+    }
+    cout << "Debug: Header skipped. Reading lines..." << endl;
 
+    int row_count = 0;
     while (getline(file, line)) {
         stringstream ss(line);
         string val_str;
         vector<float> values;
         
         while (getline(ss, val_str, ',')) {
-            if (!val_str.empty())
-                values.push_back(stof(val_str));
+            if (!val_str.empty()) {
+                try {
+                    values.push_back(stof(val_str));
+                } catch (...) {
+                     // ignore parse errors for now
+                }
+            }
         }
 
         // Check if we have enough data (frame + face_id + 68*2 points = 138 columns minimum)
-        // データが十分か確認 (frame + face_id + 68*2点 = 最低138列)
-        if (values.size() < 138) continue;
-
-        // Create 2x68 matrix / 2x68行列を作成
-        Mat_<float> landmarks(2, 68);
-        int idx = 2; // Start after frame and face_id / frameとface_idの次から開始
-        for (int i = 0; i < 68; ++i) {
-            landmarks(0, i) = values[idx];     // x
-            landmarks(1, i) = values[idx + 68]; // y (OpenFace often stores xs then ys, or x1,y1? check format)
-            // Warning: OpenFace CSV usually stores x_0, x_1 ... x_67, y_0, y_1 ... y_67
-            // 警告: OpenFaceのCSVは通常 x_0, x_1 ... x_67, y_0, y_1 ... y_67 の順で格納されます
-            // If interleaved (x1,y1, x2,y2...), adjust index. Assuming standard OpenFace output format here.
-            // もし交互の場合 (x1,y1, x2,y2...) はインデックスを調整してください。ここではOpenFace標準出力を想定します。
+        if (values.size() < 138) {
+            continue; 
         }
+
+        Mat_<float> landmarks(2, 68);
         
-        // Wait, standard OpenFace CSV header is: frame, face_id, timestamp, confidence, success, gaze..., pose..., landmarks_2d (x_0...x_67, y_0...y_67)
-        // Correction: Standard CSV has many columns. We need to parse by column name ideally, but here assuming stripped CSV or known fixed format.
-        // If simply x0..x67, y0..y67 starting at col X.
-        // Let's assume the user provides a simplified CSV as per instruction 2: "frame, x1, y1, ... x68, y68"
-        // 修正: ユーザー指示に "format: frame, x1, y1, ... x68, y68" とあるため、これを前提にします。
-        
+        // Assumption: format is frame, x1, y1, ... x68, y68 (interleaved)
         int landmark_start_idx = 1; // After frame number
+        
         for(int i=0; i<68; ++i) {
             landmarks(0, i) = values[landmark_start_idx + i*2];     // x_i
             landmarks(1, i) = values[landmark_start_idx + i*2 + 1]; // y_i
         }
         
         all_landmarks.push_back(landmarks);
+        row_count++;
     }
+    cout << "Debug: Loaded " << row_count << " landmark frames." << endl;
     return true;
 }
 
@@ -110,165 +174,243 @@ bool LoadLandmarks(const string& csv_path, vector<Mat_<float>>& all_landmarks) {
 // Main Function
 // -------------------------------------------------------------------------------------------------------------------
 int main(int argc, char** argv) {
+    cout << "Debug: Program started." << endl;
+
     if (argc < 4) {
         cout << "Usage: RecoverAU <hog_file> <landmark_csv> <output_csv> [model_dir]" << endl;
-        cout << "使用法: RecoverAU <hog_file> <landmark_csv> <output_csv> [model_dir]" << endl;
         return 1;
     }
 
     string hog_file = argv[1];
     string landmark_file = argv[2];
     string output_file = argv[3];
-    string model_dir = (argc > 4) ? argv[4] : "model/location"; // Update default if needed
 
-    // 1. Load HOG Data (dlib deserialization)
-    // 1. HOGデータの読み込み (dlibデシリアライズ)
-    cout << "Loading HOG file..." << endl;
-    vector<dlib::matrix<double, 0, 1>> hog_data; // dlib column vector
+    // 1. Load HOG Data (Custom Format)
+    cout << "Debug: Loading HOG file: " << hog_file << endl;
+    vector<RawHOGFrame> hog_frames;
+    
     try {
         ifstream fin(hog_file, ios::binary);
-        if (!fin) throw dlib::serialization_error("File not found");
-        dlib::deserialize(hog_data, fin);
+        if (!fin) {
+             cerr << "Error: HOG file not found or cannot be opened." << endl;
+             return 1;
+        }
+
+        cout << "Debug: Reading custom HOG frames..." << endl;
+        while (true) {
+            RawHOGFrame frame;
+            if (ReadHOGFrame(fin, frame)) {
+                hog_frames.push_back(frame);
+            } else {
+                break; // EOF or error
+            }
+        }
+        
+        cout << "Debug: Successfully loaded HOG data. Frames: " << hog_frames.size() << endl;
+        if(hog_frames.size() > 0) {
+            cout << "Debug: First frame info - Rows: " << hog_frames[0].num_rows 
+                 << ", Cols: " << hog_frames[0].num_cols 
+                 << ", Chans: " << hog_frames[0].num_channels << endl;
+        }
     }
-    catch (dlib::serialization_error& e) {
-        cerr << "Error loading HOG file: " << e.what() << endl;
+    catch (std::exception& e) {
+        cerr << "Error: Exception during HOG loading: " << e.what() << endl;
         return 1;
     }
 
     // 2. Load Landmarks
-    // 2. ランドマークの読み込み
-    cout << "Loading Landmarks..." << endl;
+    cout << "Debug: Loading Landmarks file: " << landmark_file << endl;
     vector<Mat_<float>> landmarks_data;
     if (!LoadLandmarks(landmark_file, landmarks_data)) {
+        cerr << "Error: Failed to load landmarks." << endl;
         return 1;
     }
 
-    if (hog_data.size() != landmarks_data.size()) {
-        cerr << "Warning: Number of HOG frames (" << hog_data.size() << ") does not match Landmarks (" << landmarks_data.size() << ")." << endl;
-        cerr << "警告: HOGフレーム数 (" << hog_data.size() << ") とランドマーク数 (" << landmarks_data.size() << ") が一致しません。" << endl;
-        // Proceed with minimum? / 最小数で続行？
+    // Validation
+    if (hog_frames.empty()) {
+        cerr << "Error: HOG data is empty." << endl;
+        return 1;
     }
-    size_t num_frames = min(hog_data.size(), landmarks_data.size());
+    if (landmarks_data.empty()) {
+        cerr << "Error: Landmark data is empty." << endl;
+        return 1;
+    }
+
+    if (hog_frames.size() != landmarks_data.size()) {
+        cerr << "Warning: HOG frames (" << hog_frames.size() << ") != Landmarks (" << landmarks_data.size() << ")." << endl;
+    }
+    size_t num_frames = min(hog_frames.size(), landmarks_data.size());
+    cout << "Debug: Processing " << num_frames << " frames." << endl;
 
     // 3. Initialize FaceAnalyser
-    // 3. FaceAnalyserの初期化
-    cout << "Initializing FaceAnalyser..." << endl;
-    FaceAnalyserParameters fa_params;
-    // Ensure we use STATIC models if requested (check if arguments needed)
-    // 必要に応じて静的モデルを使用するように引数を確認
-    // fa_params.arguments = ...; 
+    cout << "Debug: Initializing FaceAnalyser..." << endl;
     
-    FaceAnalyser face_analyser(fa_params);
-
-    // Prepare Output
-    // 出力の準備
-    ofstream out_file(output_file);
-    if (!out_file.is_open()) {
-        cerr << "Error opening output file." << endl;
-        return 1;
-    }
+    // Construct arguments to pass to FaceAnalyserParameters
+    // We pass argv[0] so it can find the root directory.
+    // Also explicitly tell it where to look if possible, but the constructor logic is:
+    // root = fs::path(argv[0]).parent_path();
+    // Then it looks for "AU_predictors/..." relative to root or current dir?
+    // Actually FaceAnalyserParameters::init() sets model_location.
+    // By default it might look in "./AU_predictors".
+    // Since we are in OpenFace root (CWD), and models are in lib/local/FaceAnalyser/AU_predictors,
+    // we need to guide it. 
+    // BUT usually OpenFace "install" copies models to the bin folder.
+    // If not, we might fail.
+    // Let's rely on valid[0] = true logic or passed args.
     
-    // Write Header (Standard OpenFace AU header)
-    // ヘッダー書き込み (OpenFace標準AUヘッダー)
-    out_file << "frame,timestamp";
-    auto au_names = face_analyser.GetAUClassNames();
-    for (const auto& au : au_names) out_file << ",AU" << au << "_c";
-    auto au_reg_names = face_analyser.GetAURegNames();
-    for (const auto& au : au_reg_names) out_file << ",AU" << au << "_r";
-    out_file << endl;
-
-    // 4. Processing Loop
-    // 4. 処理ループ
-    cout << "Processing " << num_frames << " frames..." << endl;
+    vector<string> fa_args;
+    fa_args.push_back(string(argv[0]));
+    // If user wants static, add "-au_static"? User requested static before.
+    fa_args.push_back("-au_static"); 
     
-    for (size_t i = 0; i < num_frames; ++i) {
-        // A. Convert HOG to cv::Mat
-        // A. HOGをcv::Matに変換
-        // dlib matrix to cv::Mat (OpenFace usually expects CV_64F)
-        Mat_<double> hog_mat_cv = dlib::toMat(hog_data[i]);
-        
-        // Critical: Clone/Copy to ensure continuous memory if needed, although toMat usually wraps.
-        // Make sure it's valid.
-        
-        // B. Inject HOG into FaceAnalyser (Using exposed member)
-        // B. HOGをFaceAnalyserに注入 (公開されたメンバを使用)
-        // *** CRITICAL MODIFICATION REQUIRED IN FaceAnalyser.h ***
-        // *** FaceAnalyser.h に重要な修正が必要です ***
-        face_analyser.hog_desc_frame = hog_mat_cv.clone(); 
+    FaceAnalyserParameters fa_params(fa_args);
 
-        // C. Calculate Geometry (Using PDM)
-        // C. 幾何特徴量の計算 (PDMを使用)
-        // We need 'geom_descriptor_frame'. OpenFace calculates this from PDM parameters.
-        // Landmarks (image space) -> PDM Parameters -> Geometry Descriptor
-        // ランドマーク（画像空間） -> PDMパラメータ -> 幾何特徴量
+    // Manual override if needed: 
+    // If we are strictly in the dev structure:
+    // "model_location" is private. We can't set it.
+    // But we can rely on file system operations or CWD.
+    // The previous error was "Could not find...".
+    // Let's assume standard behavior: copy generic assumption.
+    
+    try {
+        FaceAnalyser face_analyser(fa_params);
         
-        // Step C1: PDM Parameters
-        Mat_<float> shape_2d = landmarks_data[i];
-        Vec6f params_global;
-        Mat_<float> params_local;
-        
-        // We assume we don't have 3D, so we might estimate or fit.
-        // face_analyser.pdm.CalcParams(...) requires 3D or 2D?
-        // OpenFace's PDM::CalcParams computes PDM params given the 2D landmarks.
-        // PDM::CalcParams(cv::Mat_<float>& out_params_global, cv::Mat_<float>& out_params_local, const cv::Mat_<float>& landmarks_2d, const Vec6f& params_global_init, const Mat_<float>& params_local_init, bool local_only=false);
-        // Note: Signatures may vary. Assuming standard one.
-        
-        // First, calc params.
-        face_analyser.pdm.CalcParams(params_global, params_local, shape_2d);
+        // Critical Check: Did it load?
+        if (face_analyser.pdm.NumberOfPoints() == 0) {
+            cerr << "Error: FaceAnalyser failed to initialize PDM. Models likely not found." << endl;
+            cerr << "Hint: Ensure 'AU_predictors' directory is in the current directory or relative to executable." << endl;
+            // Try to suggest where it is looking?
+            // cerr << "Search path: " << fa_params.getModelLoc() << endl; // access if public
+            return 1;
+        }
 
-        // Step C2: Geometry Descriptor
-        // In FaceAnalyser.cpp, GetGeomDescriptor() computes this.
-        // Usually: geom_desc_frame = params_global (some subset) + params_local
-        // FaceAnalyser implementation: 
-        // geom_descriptor_frame = (params_global[0], params_global[4], params_global[5], params_local...)
-        // We need to replicate this logic exactly or call a helper if available.
-        // Since we exposed 'geom_descriptor_frame', we can write to it.
-        
-        // Replicating typical logic:
-        // PDM params: scale, rot_x, rot_y, rot_z, tx, ty (6 global) + local (non-rigid)
-        // FaceAnalyser typically uses: scale, rot_x, rot_y, rot_z (NO translation) + local weights
-        
-        Mat_<double> geom_desc(1, 4 + params_local.rows, 0.0);
-        geom_desc(0,0) = params_global[0]; // Scale
-        geom_desc(0,1) = params_global[1]; // Rot X
-        geom_desc(0,2) = params_global[2]; // Rot Y
-        geom_desc(0,3) = params_global[3]; // Rot Z
-        
-        Mat_<double> local_double;
-        params_local.convertTo(local_double, CV_64F);
-        
-        // Copy local params
-        Mat target_roi = geom_desc.colRange(4, 4 + params_local.rows);
-        local_double.t().copyTo(target_roi);
-        
-        face_analyser.geom_descriptor_frame = geom_desc.clone();
+        if (face_analyser.GetAUClassNames().empty() && face_analyser.GetAURegNames().empty()) {
+             cerr << "Error: No AU models loaded." << endl;
+             return 1;
+        }
 
-        // D. Output Timestamp (or frame number)
-        face_analyser.current_time_seconds = (double)i * 0.033; // Mock timestamp if needed / 仮のタイムスタンプ
+        cout << "Debug: FaceAnalyser initialized. PDM Points: " << face_analyser.pdm.NumberOfPoints() << endl;
 
-        // E. Predict
-        // E. 予測
-        // Call the exposed prediction function
-        // 公開された予測関数を呼び出し
-        face_analyser.PredictCurrentAUs(0); // 0 = view
-
-        // F. Write Result
-        // F. 結果書き込み
-        out_file << i << "," << face_analyser.current_time_seconds;
+        // Prepare Output
+        cout << "Debug: Opening output file: " << output_file << endl;
+        ofstream out_file(output_file);
+        if (!out_file.is_open()) {
+            cerr << "Error: Could not open output file." << endl;
+            return 1;
+        }
         
-        // Presence
-        auto preds_c = face_analyser.GetCurrentAUsClass();
-        for (const auto& p : preds_c) out_file << "," << p.second;
-        
-        // Intensity
-        auto preds_r = face_analyser.GetCurrentAUsReg();
-        for (const auto& p : preds_r) out_file << "," << p.second;
-        
+        // Write Header
+        out_file << "frame,timestamp";
+        auto au_names = face_analyser.GetAUClassNames();
+        for (const auto& au : au_names) out_file << ",AU" << au << "_c";
+        auto au_reg_names = face_analyser.GetAURegNames();
+        for (const auto& au : au_reg_names) out_file << ",AU" << au << "_r";
         out_file << endl;
+
+        // 4. Processing Loop
+        cout << "Debug: Starting processing loop..." << endl;
+        
+        for (size_t i = 0; i < num_frames; ++i) {
+            if (i % 100 == 0) cout << "Debug: Processing frame " << i << "/" << num_frames << endl;
+
+            // A. HOG
+            // Set dimensions
+            face_analyser.num_hog_rows = hog_frames[i].num_rows;
+            face_analyser.num_hog_cols = hog_frames[i].num_cols;
+            
+            // HOG Data: Convert to standard Row Vector (1 x N)
+            // FaceAnalyser expects Row Vectors for feature concatenation (hconcat)
+            face_analyser.hog_desc_frame = hog_frames[i].hog_data.clone(); 
+            
+            // B. Calculate Geometry
+            Mat_<float> shape_2d = landmarks_data[i];
+
+            // ★修正ポイント1：HOGが「縦長」なら「横長」に転置する
+            if (face_analyser.hog_desc_frame.rows > face_analyser.hog_desc_frame.cols) {
+                face_analyser.hog_desc_frame = face_analyser.hog_desc_frame.t();
+            }
+            
+            // Check shape dimensions: should be 68 rows x 2 cols?
+            // LoadLandmarks creates 2 rows x 68 cols (x1..x68; y1..y68)
+            // But OpenFace PDM usually works with COLUMN vectors (2*n x 1) or (n x 2) or (n x 3)?
+            // PDM::CalcParams: const cv::Mat_<float> & landmark_locations
+            // It expects a ONE-COLUMN matrix of size 2*n x 1 (x1...xn, y1...yn)^T?
+            // Or (n x 2)?
+            // Let's check PDM.cpp:
+            // "landmark_locations.at<float>(i)" -> Accessing index i.
+            // "landmark_locations.at<float>(i+n)" -> Accessing index i+n.
+            // This implies it expects a single column vector (2n x 1) where first n are X, next n are Y.
+            // My LoadLandmarks creates (2, 68). THIS IS THE TYPE ERROR!
+            // I need to reshape/transpose it to (136, 1).
+            
+            Mat_<float> shape_2d_formatted(face_analyser.pdm.NumberOfPoints() * 2, 1);
+            for(int k=0; k<face_analyser.pdm.NumberOfPoints(); ++k) {
+                shape_2d_formatted(k, 0) = shape_2d(0, k); // x
+                shape_2d_formatted(k + face_analyser.pdm.NumberOfPoints(), 0) = shape_2d(1, k); // y
+            }
+            
+            Vec6f params_global;
+            Mat_<float> params_local;
+            
+            face_analyser.pdm.CalcParams(params_global, params_local, shape_2d_formatted);
+            
+            // ★重要修正: OpenFaceのFaceAnalyser.cppと同じgeom_descriptor構造を使用
+            // FaceAnalyserの正しい構造: [locs (princ_comp * local) | local] = [204 | 34] = 238次元
+            // 旧コード(間違い): [pose(4) | local(34)] = 38次元 → means(4702)と不一致
+            
+            // params_localを転置して行ベクトルに
+            Mat_<double> local_params_row;
+            params_local.convertTo(local_params_row, CV_64F);
+            local_params_row = local_params_row.t(); // 1 x 34 行ベクトル
+            
+            // princ_comp を double に変換
+            Mat_<double> princ_comp_d;
+            face_analyser.pdm.princ_comp.convertTo(princ_comp_d, CV_64F);
+            
+            // locs = princ_comp (204x34) * local_params (34x1) = (204x1)
+            Mat_<double> locs = princ_comp_d * local_params_row.t();
+            
+            // geom_descriptor_frame = [locs.t() (1x204) | local_params (1x34)] = 1x238
+            Mat_<double> geom_desc;
+            cv::hconcat(locs.t(), local_params_row, geom_desc);
+            
+            face_analyser.geom_descriptor_frame = geom_desc.clone();
+
+            // 念のためGeomが横長であることを確認（縦長なら転置）
+            if (face_analyser.geom_descriptor_frame.rows > face_analyser.geom_descriptor_frame.cols) {
+                face_analyser.geom_descriptor_frame = face_analyser.geom_descriptor_frame.t();
+            }
+
+            // D. Timestamp
+            face_analyser.current_time_seconds = (double)i * 0.033; 
+
+            // E. Predict
+            cout << "Debug: HOG dims: " << face_analyser.hog_desc_frame.cols << " x " << face_analyser.hog_desc_frame.rows << endl;
+            cout << "Debug: Geom dims: " << face_analyser.geom_descriptor_frame.cols << " x " << face_analyser.geom_descriptor_frame.rows << endl;
+            face_analyser.PredictCurrentAUs(0);
+
+            // F. Write Result
+            out_file << i << "," << face_analyser.current_time_seconds;
+            
+            auto preds_c = face_analyser.GetCurrentAUsClass();
+            for (const auto& p : preds_c) out_file << "," << p.second;
+            
+            auto preds_r = face_analyser.GetCurrentAUsReg();
+            for (const auto& p : preds_r) out_file << "," << p.second;
+            
+            out_file << endl;
+        }
+
+        cout << "Debug: Loop finished." << endl;
+
+    } catch (std::exception& e) {
+        cerr << "Error: Exception in processing loop/initialization: " << e.what() << endl;
+        return 1;
+    } catch (...) {
+        cerr << "Error: Unknown exception occurred." << endl;
+        return 1;
     }
 
     cout << "Done. Saved to " << output_file << endl;
-    cout << "完了。" << output_file << " に保存しました。" << endl;
-
     return 0;
 }

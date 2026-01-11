@@ -2,13 +2,11 @@
 c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp : warning C4819: ファイルは、現在のコード ページ (932) で表示できない文字を含んでいます。データの損失を防ぐために、ファイルを Unicode 形式で保存してください。
 c:\users\kishibashi\nict\aurecov_openface\openface\lib\3rdparty\dlib\include\dlib\console_progress_indicator.h(153): warning C4834: 'nodiscard' 属性を持つ関数の戻り値を破棄しています
 c:\users\kishibashi\nict\aurecov_openface\openface\lib\3rdparty\dlib\include\dlib\image_transforms\morphological_operations.h : warning C4819: ファイルは、現在のコード ページ (932) で表示できない文字を含んでいます。データの損失を防ぐために、ファイルを Unicode 形式で保存してください。
-c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp(148): error C2001: 定数が 2 行目に続いています。
-c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp(150): error C2143: 構文エラー: ';' が '}' の前にありません。
-c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp(242): error C2039: 'copyTo': 'cv::MatExpr' のメンバーではありません。
-  c:\users\kishibashi\nict\aurecov_openface\openface\lib\3rdparty\opencv\include\opencv2\core\mat.hpp(3513): note: 'cv::MatExpr' の宣言を確認してください
-c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp(271): error C3872: '0x25c6': この文字を識別子で使用することはできません
-c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp(271): error C2146: 構文エラー: ';' が、識別子 '縺ｫ菫晏ｭ倥＠縺ｾ縺励◆縲・' の前に必要です。
-c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp(271): error C2065: '縺ｫ菫晏ｭ倥＠縺ｾ縺励◆縲・': 定義されていない識別子です。
-c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp(271): error C2563: 仮パラメーター リストまたは関数へのポインターが、適合していません。
-c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp(271): error C2568: '<<': オーバーロード関数のうち、どれを呼び出すのか決定できません。
-  c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp(271): note: 'std::basic_ostream<_Elem,_Traits> &std::endl(std::basic_ostream<_Elem,_Traits> &)' の可能性があります
+  0 個のファイルをコピーしました
+  コード生成しています。
+  コード生成が終了しました。
+  RecoverAU.vcxproj -> C:\Users\kishibashi\NICT\AURecov_openface\OpenFace\x64\Release\RecoverAU.exe
+  0 個のファイルをコピーしました
+  0 個のファイルをコピーしました
+  0 個のファイルをコピーしました
+  0 個のファイルをコピーしました
