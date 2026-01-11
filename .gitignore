@@ -105,3 +105,4 @@ lib/local/CppInerop/Debug/
 
 # IDE-generated folders
 .idea
+.vs/
