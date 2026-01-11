@@ -1,0 +1,136 @@
+/*
+ * OpenFace AU Recovery Pipeline - The "Perfect Match" Architecture
+ * * Goal: Reproduce exact CSV values (correlation > 0.99).
+ * Strategy: Combine "Online Feature Extraction" with "Offline Calibration".
+ * * Reference Files:
+ * - gemini_openface_src/srcFaceAnalyser/FaceAnalyser.cpp
+ * - gemini_openface_src/FeatureExtraction.cpp
+ */
+
+// ============================================================================
+// GLOBAL STATE (Context) / グローバル状態（コンテキスト）
+// ============================================================================
+// OpenFace does NOT use a simple median. It uses a histogram approximation.
+// OpenFaceは単純な中央値ではなく、ヒストグラム近似を使用します。これがズレの主因になりがちです。
+struct HistogramMedian {
+    int bins;
+    double min_val, max_val;
+    Matrix<int> histogram; // [feature_dim x bins]
+    Vector<double> current_median;
+
+    void Update(Vector feature) {
+        // Binning logic (Linear interpolation into bins)
+        // ... (See details in Step 4)
+    }
+};
+
+// ============================================================================
+// MAIN PIPELINE / メインパイプライン
+// ============================================================================
+
+void RecoverAU_Pipeline(VideoInput video, LandmarkInput csv_landmarks) {
+    
+    // --- Phase 1: Online Processing (Frame by Frame) ---
+    // ここで全フレームの特徴量計算と「仮の予測」を行います。
+    
+    FaceAnalyser analyser;
+    List<FrameResult> history;
+
+    while (video.hasFrame()) {
+        Mat frame = video.nextFrame();
+        Mat landmarks = csv_landmarks.next(); // From your CSV recovery source
+        
+        // STEP 1: PDM & Geometry Decomposition
+        // ランドマークを「姿勢(Global)」と「表情(Local)」に分解
+        Vec6f params_global;
+        Mat params_local;
+        pdm.CalcParams(params_global, params_local, landmarks);
+
+        // STEP 2: Face Alignment (Normalization)
+        // 顔を正面向き・標準サイズ(112x112等)に正規化
+        Mat aligned_face;
+        AlignFaceMask(aligned_face, frame, landmarks, params_global, pdm);
+        // Note: OpenFace uses "Similary Transform" internally here.
+
+        // STEP 3: Feature Extraction (HOG & Geom)
+        // HOG (FHOG implementation) and Geometry features
+        Vector hog_desc  = Extract_FHOG(aligned_face); 
+        Vector geom_desc = params_local + global_pose_residuals;
+
+        // STEP 4: Dynamic Median Update (CRITICAL)
+        // ヒストグラムを更新し、現在の中央値を推定
+        // This MUST be reproduced exactly. Standard median() will fail.
+        analyser.hog_hist.Update(hog_desc);
+        analyser.geom_hist.Update(geom_desc);
+
+        // STEP 5: Online Prediction (Linear SVR/SVM)
+        // 現在の特徴量と、現在の中央値を使って予測
+        // Dynamic Model: weights * (feature - median) + bias
+        double pred_stat = SVR_Static.predict(hog_desc, geom_desc);
+        double pred_dyn  = SVR_Dynamic.predict(hog_desc - analyser.hog_hist.current_median, 
+                                               geom_desc - analyser.geom_hist.current_median);
+        
+        // Combine (often just sum or average depending on AU)
+        double raw_prediction = pred_stat + pred_dyn;
+
+        history.add({raw_prediction, success: true});
+    }
+
+    // --- Phase 2: Offline Calibration (Post-Processing) ---
+    // ここがAntigravityのコードになかった「CSV値と一致させるための」最重要パートです。
+    // OpenFace rewrites the output file with these corrected values.
+    
+    Finalize_And_Correct(history);
+}
+
+// ============================================================================
+// CORE LOGIC DETAILS / コアロジック詳細
+// ============================================================================
+
+void Finalize_And_Correct(List<FrameResult>& history) {
+    /* * Ref: FaceAnalyser.cpp::ExtractAllPredictionsOfflineReg
+     * Logic: 
+     * 1. Sort valid predictions to find "neutral" baseline.
+     * 2. Subtract baseline (Cutoff).
+     * 3. Clip values (0 to 5).
+     * 4. Apply Moving Average Smoothing.
+     */
+
+    // A. Dynamic Shift (Baseline Correction) / 動的シフト（ベースライン補正）
+    // --------------------------------------------------------------------
+    // Collect all valid predictions for this person/video
+    List<double> valid_preds = history.filter(h => h.success).map(h => h.raw_prediction);
+    std::sort(valid_preds.begin(), valid_preds.end());
+
+    // "Cutoff": Determine the baseline intensity (e.g., specific percentile)
+    // AUごとに学習されたcutoff値がある (SVR_dynamic_lin_regressors.txt等に記載)
+    double cutoff_ratio = GetCutoffRatioForAU(au_id); 
+    double offset = valid_preds[ valid_preds.size() * cutoff_ratio ];
+
+    // Apply Shift
+    for (int i=0; i < history.size(); i++) {
+        if (history[i].success) {
+            history[i].corrected = history[i].raw_prediction - offset;
+        } else {
+            history[i].corrected = 0.0;
+        }
+    }
+
+    // B. Clipping / クリッピング
+    // --------------------------------------------------------------------
+    for (auto& frame : history) {
+        if (frame.corrected < 0) frame.corrected = 0;
+        if (frame.corrected > 5) frame.corrected = 5;
+    }
+
+    // C. Temporal Smoothing (Moving Average) / 時間的平滑化
+    // --------------------------------------------------------------------
+    // Ref: FaceAnalyser.cpp lines ~1085
+    // Window size = 3 for Regression (Intensity), 7 for Classification (Presence)
+    int window_size = 3; 
+    List<double> final_values = MovingAverage(history.corrected, window_size);
+
+    // OUTPUT: These 'final_values' match the CSV output exactly.
+    // 出力: この 'final_values' がCSV出力と完全に一致します。
+    return final_values;
+}

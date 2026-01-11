@@ -102,10 +102,10 @@ void SVM_static_lin::Read(std::ifstream& stream, const std::vector<std::string>&
 void SVM_static_lin::Predict(std::vector<double>& predictions, std::vector<std::string>& names, const cv::Mat_<double>& fhog_descriptor, const cv::Mat_<double>& geom_params)
 {
 	// DEBUG: 次元不一致デバッグ用出力 / Debug output for dimension mismatch diagnosis
-	std::cout << "Debug [SVM_static_lin]: HOG=" << fhog_descriptor.rows << "x" << fhog_descriptor.cols 
-	          << ", Geom=" << geom_params.rows << "x" << geom_params.cols
-	          << ", means=" << this->means.rows << "x" << this->means.cols 
-	          << ", support_vectors=" << this->support_vectors.rows << "x" << this->support_vectors.cols << std::endl;
+	// std::cout << "Debug [SVM_static_lin]: HOG=" << fhog_descriptor.rows << "x" << fhog_descriptor.cols 
+	//           << ", Geom=" << geom_params.rows << "x" << geom_params.cols
+	//           << ", means=" << this->means.rows << "x" << this->means.cols 
+	//           << ", support_vectors=" << this->support_vectors.rows << "x" << this->support_vectors.cols << std::endl;
 	
 	if(AU_names.size() > 0)
 	{

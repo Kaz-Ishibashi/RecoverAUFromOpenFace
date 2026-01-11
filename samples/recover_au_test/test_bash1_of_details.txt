@@ -1,0 +1,11 @@
+Input:C:\Users\kishibashi\NICT\AURecov_openface\OpenFace\samples\recover_au_test\test_bash1.mp4
+Input full path:C:\Users\kishibashi\NICT\AURecov_openface\OpenFace\samples\recover_au_test\test_bash1.mp4
+Camera parameters:1316.67,1316.67,960,544
+Output HOG:test_bash1.hog
+Output csv:test_bash1.csv
+Gaze: 0
+AUs: 1
+Landmarks 2D: 1
+Landmarks 3D: 1
+Pose: 1
+Shape parameters: 0

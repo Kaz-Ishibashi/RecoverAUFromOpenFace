@@ -21,6 +21,7 @@
 // OpenFace Headers
 #include "FaceAnalyser.h"
 #include "LandmarkDetectorUtils.h" // For PDM and utils
+#include "DumpLogger.h"
 
 // OpenCV Headers
 #include <opencv2/core/core.hpp>
@@ -98,23 +99,13 @@ bool ReadHOGFrame(ifstream& fin, RawHOGFrame& frame) {
     int num_cols = frame.num_cols;
     int num_channels = frame.num_channels;
 
-    for (int y = 0; y < num_cols; ++y) { // Col matches OpenFace outer
-        for (int x = 0; x < num_rows; ++x) { // Row matches OpenFace inner
-            for (int ch = 0; ch < num_channels; ++ch) {
-                
-                // Destination Index (Col-Major linear)
-                // Since we fill standard linear buffer: dest_idx++;
-                int dest_idx = y * (num_rows * num_channels) + x * num_channels + ch;
-                
-                // Source Index (Row-Major assumption from file)
-                // src_idx = x * (num_cols * num_channels) + y * num_channels + ch;
-                int src_idx = x * (num_cols * num_channels) + y * num_channels + ch;
-                
-                if (dest_idx < total_elements && src_idx < total_elements) {
-                    frame.hog_data(0, dest_idx) = (double)raw_data[src_idx];
-                }
-            }
-        }
+    // Data in file is already in the correct order (y, x, ch) as written by RecorderHOG.cpp
+    // RecorderHOG writes: for y (0..cols) -> for x (0..rows) -> for o (0..31)
+    // This matches the FaceAnalyser memory layout.
+    // So we just need to cast from float (file) to double (memory).
+
+    for (size_t k = 0; k < total_elements; ++k) {
+        frame.hog_data(0, k) = (double)raw_data[k];
     }
     
     return true;
@@ -218,6 +209,8 @@ int main(int argc, char** argv) {
     string hog_file = argv[1];
     string landmark_file = argv[2];
     string output_file = argv[3];
+
+    INIT_DUMP("dump_recover.csv");
 
     // 1. Load HOG Data (Custom Format)
     // cout << "Debug: Loading HOG file: " << hog_file << endl;
@@ -341,11 +334,37 @@ int main(int argc, char** argv) {
         for (const auto& au : au_reg_names) out_file << "," << au << "_r";
         out_file << endl;
 
+        // Structure to hold history for Offline Calibration
+        struct FrameResult {
+            double timestamp;
+            bool success;
+            vector<double> raw_reg;
+            vector<double> raw_class;
+            vector<double> final_reg;
+            vector<double> final_class;
+        };
+        vector<FrameResult> history;
+
         // 4. Processing Loop
+        // ========================================================================
+        // NOTE: FrameID Offset for Dump Comparison
+        // OpenFace's FaceAnalyser::AddNextFrame() has DIFFERENT offset for CP1 vs others:
+        //   - CP1 is dumped BEFORE frames_tracking++ (Line 317 in FaceAnalyser.cpp)
+        //   - CP2, CP3, CP4, etc. are dumped AFTER frames_tracking++ (Line 319+)
+        // 
+        // So for RecoverAU:
+        //   - CP1: use i (GT FrameID 0-215)
+        //   - All other CPs: use i+1 (GT FrameID 1-216)
+        // ========================================================================
         cout << "Debug: Starting processing loop..." << endl;
         
         for (size_t i = 0; i < num_frames; ++i) {
-            // if (i % 100 == 0) cout << "Debug: Processing frame " << i << "/" << num_frames << endl;
+            // FrameID for CP1: use i (matches GT's pre-increment behavior)
+            // FrameID for all other CPs: use i+1 (matches GT's post-increment behavior)
+            // CP1用FrameID: i を使用 (GTのインクリメント前の動作に一致)
+            // 他のCP用FrameID: i+1 を使用 (GTのインクリメント後の動作に一致)
+            int dump_frame_id_cp1 = static_cast<int>(i);      // For CP1 only
+            int dump_frame_id = static_cast<int>(i) + 1;       // For CP2, CP3, CP4, etc.
 
             // A. HOG
             // Set dimensions
@@ -358,6 +377,9 @@ int main(int argc, char** argv) {
             
             // B. Calculate Geometry
             Mat_<float> shape_2d = landmarks_data[i];
+            
+            // CP1: Raw Landmarks (uses pre-increment FrameID)
+            DUMP_MAT(dump_frame_id_cp1, "CP1", shape_2d);
 
             // ★修正ポイント1：HOGが「縦長」なら「横長」に転置する
             if (face_analyser.hog_desc_frame.rows > face_analyser.hog_desc_frame.cols) {
@@ -464,7 +486,13 @@ int main(int argc, char** argv) {
                     face_analyser.min_val_geom,
                     face_analyser.max_val_geom
                 );
+                DUMP_MAT(dump_frame_id, "CP5_HOG", face_analyser.hog_desc_median);
+                DUMP_MAT(dump_frame_id, "CP5_Geom", face_analyser.geom_descriptor_median);
             }
+            
+            // Dump HOG/Geom (CP3/CP4)
+            if (dump_frame_id <= 5) DUMP_MAT(dump_frame_id, "CP3", face_analyser.hog_desc_frame); // HOG CP3
+            DUMP_MAT(dump_frame_id, "CP4", face_analyser.geom_descriptor_frame); // Geom CP4
 
             // E. Predict
             if (i == 0) {
@@ -490,26 +518,113 @@ int main(int argc, char** argv) {
                  // --------------------------------------
             }
 
-            // PredictCurrentAUs returns the predictions directly, it does NOT populate AU_predictions_reg member
-            // PredictCurrentAUsClass returns classifications, it does NOT populate AU_predictions_class member
+            // PredictCurrentAUs returns the predictions directly
             auto preds_r = face_analyser.PredictCurrentAUs(0);
             auto preds_c = face_analyser.PredictCurrentAUsClass(0);
             
-            // if (i == 0) cout << "Debug: preds_r size=" << preds_r.size() << ", preds_c size=" << preds_c.size() << endl;
+            // CP6: Raw Predictions
+            vector<double> raw_reg_vals;
+            for(size_t k=0; k<preds_r.size(); ++k) {
+                DUMP_VAL(dump_frame_id, "CP6", k, preds_r[k].second);
+                raw_reg_vals.push_back(preds_r[k].second);
+            }
+            vector<double> raw_class_vals;
+            for(auto& p : preds_c) raw_class_vals.push_back(p.second);
 
-            // F. Write Result
-            out_file << i << "," << face_analyser.current_time_seconds;
+            // Store in history (don't write yet)
+            FrameResult res;
+            res.timestamp = face_analyser.current_time_seconds;
+            res.success = success;
+            res.raw_reg = raw_reg_vals;
+            res.raw_class = raw_class_vals;
+            // Initialize final with raw for now
+            res.final_reg = raw_reg_vals; 
+            res.final_class = raw_class_vals;
+            history.push_back(res);
+        }
+
+        // --- PHASE 2: OFFLINE CALIBRATION ---
+        
+        // A. Dynamic Shift (Baseline Subtraction) for REGRESSION
+        vector<string> dyn_au_names = face_analyser.AU_SVR_dynamic_appearance_lin_regressors.GetAUNames();
+        vector<double> cutoffs = face_analyser.AU_SVR_dynamic_appearance_lin_regressors.GetCutoffs();
+
+        int num_reg_aus = face_analyser.GetAURegNames().size();
+        
+        // For each AU
+        for (int au_idx = 0; au_idx < num_reg_aus; ++au_idx) {
+            string au_name = face_analyser.GetAURegNames()[au_idx];
             
-            for (const auto& p : preds_c) out_file << "," << p.second;
-            for (auto& p : preds_r) {
-                // Post-processing: Clamp to [0, 5]
-                double val = p.second;
-                if (val < 0.0) val = 0.0;
-                if (val > 5.0) val = 5.0;
-                out_file << "," << val;
+            // Check if dynamic
+            bool is_dyn = false;
+            int dyn_idx = -1;
+            for(size_t d=0; d<dyn_au_names.size(); ++d) {
+                if (dyn_au_names[d] == au_name) {
+                    is_dyn = true;
+                    dyn_idx = d;
+                    break;
+                }
+            }
+
+            double offset = 0.0;
+            if (is_dyn && dyn_idx < cutoffs.size()) {
+                // Collect valid predictions
+                vector<double> valid_preds;
+                for(const auto& h : history) {
+                    if(h.success && au_idx < h.raw_reg.size()) valid_preds.push_back(h.raw_reg[au_idx]);
+                }
+                std::sort(valid_preds.begin(), valid_preds.end());
+                
+                double cutoff_ratio = cutoffs[dyn_idx];
+                if (cutoff_ratio != -1 && !valid_preds.empty()) {
+                     int idx = (int)(valid_preds.size() * cutoff_ratio);
+                     if (idx < valid_preds.size()) offset = valid_preds[idx];
+                }
             }
             
+            // CP7: Offset
+            DUMP_VAL(-1, "CP7", au_idx, offset);
+
+            // Apply Offset & Clipping
+            for(size_t i=0; i<history.size(); ++i) {
+                if (history[i].success) {
+                     double val = history[i].raw_reg[au_idx];
+                     if (is_dyn) val -= offset;
+                     
+                     if (val < 0) val = 0;
+                     if (val > 5) val = 5;
+                     
+                     history[i].final_reg[au_idx] = val;
+                } else {
+                     history[i].final_reg[au_idx] = 0;
+                }
+            }
+            
+            // Smoothing (Window=3)
+            int window = 3;
+            vector<double> smoothed(history.size());
+            for(size_t i=(window-1)/2; i < history.size() - (window-1)/2; ++i) {
+                double sum = 0;
+                for(int w=-(window-1)/2; w <= (window-1)/2; ++w) {
+                     sum += history[i+w].final_reg[au_idx];
+                }
+                history[i].final_reg[au_idx] = sum / window;
+            }
+            
+            // CP8: Final Value
+             for(size_t frame_i=0; frame_i<history.size(); ++frame_i) {
+                  if (history[frame_i].success) // Only dump valid frames or all? OpenFace dumps all processed I think.
+                     DUMP_VAL(frame_i + 1, "CP8", au_idx, history[frame_i].final_reg[au_idx]); // +1 for FrameID offset
+             }
+        }
+        
+        // Write Final Output to CSV
+        for(size_t i=0; i<history.size(); ++i) {
+            out_file << i << "," << history[i].timestamp;
+            for(double v : history[i].final_class) out_file << "," << v; // Class not corrected here for brevity
+            for(double v : history[i].final_reg) out_file << "," << v;
             out_file << endl;
+
         }
 
         // cout << "Debug: Loop finished." << endl;

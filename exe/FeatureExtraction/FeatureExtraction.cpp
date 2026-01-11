@@ -221,7 +221,7 @@ int main(int argc, char **argv)
 			}
 
 			// Setting up the recorder output
-			open_face_rec.SetObservationHOG(detection_success, hog_descriptor, num_hog_rows, num_hog_cols, 31); // The number of channels in HOG is fixed at the moment, as using FHOG
+			open_face_rec.SetObservationHOG(detection_success, hog_descriptor, num_hog_cols, num_hog_rows, 31); // The number of channels in HOG is fixed at the moment, as using FHOG
 			open_face_rec.SetObservationVisualization(visualizer.GetVisImage());
 			open_face_rec.SetObservationActionUnits(face_analyser.GetCurrentAUsReg(), face_analyser.GetCurrentAUsClass());
 			open_face_rec.SetObservationLandmarks(face_model.detected_landmarks, face_model.GetShape(sequence_reader.fx, sequence_reader.fy, sequence_reader.cx, sequence_reader.cy),
