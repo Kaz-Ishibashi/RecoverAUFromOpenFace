@@ -25,6 +25,10 @@ TOLERANCE_BY_CP = {
     'CP6': 1e-3,      # Raw Prediction - inherits from CP3
     'CP7': 1e-3,      # Offset - inherits from CP6
     'CP8': 1e-3,      # Final Value - inherits from CP6
+    'CP9': 1e-6,      # Params Global (Rigid) - Exact match
+    'CP10': 1e-6,     # Params Local (Non-Rigid) - Exact match
+    'CP11': 1e-6,     # Raw Classification - Exact match expected
+    'CP12': 1e-6,     # Final Classification - Exact match expected
 }
 
 # Default tolerance for undefined checkpoints

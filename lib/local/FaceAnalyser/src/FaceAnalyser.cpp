@@ -328,6 +328,12 @@ void FaceAnalyser::AddNextFrame(const cv::Mat& frame, const cv::Mat_<float>& det
 
 		pdm.CalcParams(params_global, params_local, detected_landmarks);
 
+		// CP9: Params Global (Rigid)
+		for(int k=0; k<6; ++k) DUMP_VAL(frames_tracking, "CP9", k, params_global[k]);
+		
+		// CP10: Params Local (Non-Rigid)
+		DUMP_MAT(frames_tracking, "CP10", params_local);
+
 		// The aligned face requirement for AUs
 		AlignFaceMask(aligned_face_for_au, frame, detected_landmarks, params_global, pdm, triangulation, true, align_scale_au, align_width_au, align_height_au);
 
@@ -483,6 +489,8 @@ void FaceAnalyser::AddNextFrame(const cv::Mat& frame, const cv::Mat_<float>& det
 
 	for (size_t au = 0; au < AU_predictions_class.size(); ++au)
 	{
+		// CP11: Raw Classification Prediction
+		DUMP_VAL(frames_tracking, "CP11", (int)au, AU_predictions_class[au].second);
 
 		// Find the appropriate AU (if not found add it)		
 		// Only add if the detection was successful
@@ -738,6 +746,17 @@ void FaceAnalyser::ExtractAllPredictionsOfflineClass(std::vector<std::pair<std::
 			}
 		}
 		au_predictions.push_back(std::pair<std::string, std::vector<double>>(au_name, au_vals));
+
+		// CP12: Final Classification (Smoothed & Thresholded)
+		// dumping per frame
+		int au_idx = std::distance(AU_predictions_class_all_hist.begin(), au_iter);
+		for(size_t f=0; f<au_vals.size(); ++f) {
+			if(this->valid_preds[f]) {
+				DUMP_VAL((int)f, "CP12", au_idx, au_vals[f]);
+			} else {
+				DUMP_VAL((int)f, "CP12", au_idx, 0.0);
+			}
+		}
 
 	}
 

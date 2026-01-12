@@ -102,6 +102,20 @@ lib/local/Utilities/Debug/
 lib/3rdParty/CameraEnumerator/Debug/
 lib/local/CppInerop/Debug/
 *.user
+.mov
+.MOV
+.mp4
+.MP4
+.png
+.jpg
+test_*.csv
+test_*.avi
+test_*.mov
+test_*.mp4
+test_*.hog
+test_*.txt
+
+
 
 # IDE-generated folders
 .idea

@@ -441,6 +441,12 @@ int main(int argc, char** argv) {
             Mat_<float> params_local;
             
             face_analyser.pdm.CalcParams(params_global, params_local, shape_2d_formatted);
+
+            // CP9: Params Global (Rigid)
+            for(int k=0; k<6; ++k) DUMP_VAL(dump_frame_id, "CP9", k, params_global[k]);
+            
+            // CP10: Params Local (Non-Rigid)
+            DUMP_MAT(dump_frame_id, "CP10", params_local);
             
             if (i == 0) {
                 double min_p, max_p;
@@ -549,14 +555,21 @@ int main(int argc, char** argv) {
             auto preds_r = face_analyser.PredictCurrentAUs(0);
             auto preds_c = face_analyser.PredictCurrentAUsClass(0);
             
-            // CP6: Raw Predictions
+            // CP6: Raw Predictions (Regression)
             vector<double> raw_reg_vals;
             for(size_t k=0; k<preds_r.size(); ++k) {
                 DUMP_VAL(dump_frame_id, "CP6", k, preds_r[k].second);
                 raw_reg_vals.push_back(preds_r[k].second);
             }
+            
+            // CP11: Raw Classification
             vector<double> raw_class_vals;
-            for(auto& p : preds_c) raw_class_vals.push_back(p.second);
+            for(size_t k=0; k<preds_c.size(); ++k) {
+                DUMP_VAL(dump_frame_id, "CP11", k, preds_c[k].second);
+                raw_class_vals.push_back(preds_c[k].second);
+            }
+
+
 
             // Store in history (don't write yet)
             FrameResult res;
@@ -602,12 +615,19 @@ int main(int argc, char** argv) {
                     }
                     
                     // Re-compute predictions with final (stabilized) medians
-                    auto preds_r = face_analyser.PredictCurrentAUs(0);
-                    
+                    auto preds_r_new = face_analyser.PredictCurrentAUs(0);
+                    auto preds_c_new = face_analyser.PredictCurrentAUsClass(0);
+
                     // Update history with new predictions
-                    for(size_t k = 0; k < preds_r.size() && k < history[all_ind].raw_reg.size(); ++k) {
-                        history[all_ind].raw_reg[k] = preds_r[k].second;
-                        history[all_ind].final_reg[k] = preds_r[k].second;
+                    // Regression
+                    for(size_t k = 0; k < preds_r_new.size() && k < history[all_ind].raw_reg.size(); ++k) {
+                        history[all_ind].raw_reg[k] = preds_r_new[k].second;
+                        history[all_ind].final_reg[k] = preds_r_new[k].second;
+                    }
+                    // Classification
+                    for(size_t k = 0; k < preds_c_new.size() && k < history[all_ind].raw_class.size(); ++k) {
+                        history[all_ind].raw_class[k] = preds_c_new[k].second;
+                        history[all_ind].final_class[k] = preds_c_new[k].second;
                     }
                     
                     success_ind++;
@@ -747,10 +767,10 @@ int main(int argc, char** argv) {
                     
                     history[frame_i].final_reg[orig_idx] = val;
                     
-                    // CP8: Dump with sorted_idx (to match OpenFace's au index)
-                    // OpenFace uses (int)au as index, where au is iteration counter
-                    // CP8はOpenFaceのauインデックス（反復カウンター）に合わせてsorted_idxを使用
-                    DUMP_VAL(frame_i + 1, "CP8", sorted_idx, val);  // +1 for FrameID offset
+                    // CP8: Dump with frame_i (0-indexed, like OpenFace's loop variable 'frame')
+                    // OpenFace: DUMP_VAL(frame, "CP8", ...) where frame is 0-indexed loop counter
+                    // CP8はframe_iを使用（OpenFaceの'frame'変数と同じ0-indexed）
+                    DUMP_VAL(frame_i, "CP8", sorted_idx, val);  // No +1, use 0-indexed like OpenFace
                 } else {
                     history[frame_i].final_reg[orig_idx] = 0;
                 }
@@ -776,6 +796,81 @@ int main(int argc, char** argv) {
         }
         
         // Write Final Output to CSV
+        
+        // --- PHASE 3: SMOOTHING FOR CLASSIFICATION (WINDOW=7) ---
+        // Matches FaceAnalyser::ExtractAllPredictionsOfflineClass logic
+        // 1. Moving Average (size 7)
+        // 2. Threshold at 0.5 (0 or 1)
+        
+        // A. Get Class Names and Sort them to match OpenFace CP12 indexing
+        if(!history.empty()) {
+            vector<string> raw_class_names = face_analyser.GetAUClassNames();
+            vector<string> sorted_class_names = raw_class_names; // Copy
+            std::sort(sorted_class_names.begin(), sorted_class_names.end());
+            
+            // Map sorted index to original index
+            map<int, int> sorted_to_orig_class;
+            for(size_t i=0; i<sorted_class_names.size(); ++i) {
+                for(size_t j=0; j<raw_class_names.size(); ++j) {
+                    if(sorted_class_names[i] == raw_class_names[j]) {
+                        sorted_to_orig_class[i] = j;
+                        break;
+                    }
+                }
+            }
+
+            size_t num_class_aus = raw_class_names.size();
+            
+            // Iterate in SORTED order for CP12 consistency
+            for(size_t sorted_idx = 0; sorted_idx < num_class_aus; ++sorted_idx) {
+                int orig_idx = sorted_to_orig_class[sorted_idx];
+                
+                // Extract time series for this AU (using orig_idx)
+                vector<double> series;
+                for(const auto& h : history) {
+                    if(orig_idx < h.raw_class.size()) series.push_back(h.raw_class[orig_idx]);
+                    else series.push_back(0.0);
+                }
+                
+                // Apply smoothing
+                vector<double> smoothed = series;
+                int window_size = 7;
+                if((int)series.size() > (window_size - 1) / 2) {
+                    for (size_t i = (window_size - 1)/2; i < series.size() - (window_size - 1) / 2; ++i) {
+                        double sum = 0;
+                        int div_by = 0;
+                        for (int w = -(window_size - 1) / 2; w <= (window_size - 1) / 2; ++w) {
+                            if(i+w < series.size()) {
+                                sum += series[i+w];
+                                div_by++;
+                            }
+                        }
+                        sum = sum / div_by;
+                        if (sum < 0.5) sum = 0;
+                        else sum = 1;
+                        
+                        smoothed[i] = sum;
+                    }
+                }
+                
+                // Write back to history (using orig_idx) and Dump CP12 (using sorted_idx)
+                for(size_t f=0; f<history.size(); ++f) {
+                    // Update final_class
+                    if(orig_idx < history[f].final_class.size()) {
+                        history[f].final_class[orig_idx] = smoothed[f];
+                    }
+                    
+                    // CP12: Final Classification
+                    // Index must be sorted_idx to match OpenFace's map iteration!
+                    if(history[f].success) {
+                        DUMP_VAL((int)f, "CP12", (int)sorted_idx, smoothed[f]);
+                    } else {
+                        DUMP_VAL((int)f, "CP12", (int)sorted_idx, 0.0);
+                    }
+                }
+            }
+        }
+
         for(size_t i=0; i<history.size(); ++i) {
             out_file << i << "," << history[i].timestamp;
             for(double v : history[i].final_class) out_file << "," << v; // Class not corrected here for brevity
