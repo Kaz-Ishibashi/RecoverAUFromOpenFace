@@ -1,0 +1,57 @@
+{
+  "request_type": "Reverse Engineering & Pipeline Mapping",
+
+  "project": "OpenFace AU Recovery Perfect Alignment",
+
+  "objective": {
+    "goal": "Achieve >0.99 correlation between 'Recovered AU' and 'Original OpenFace AU'.",
+
+    "method": "Map the entire pipeline from Raw Video to AU Output to identify all hidden transformations (normalization, filtering, etc.)."
+  },
+
+  "instructions": [
+    {
+      "step": 1,
+
+      "task": "File Chain Identification",
+
+      "description_en": "Identify all source files and classes involved in the path from Video/Image input to AU prediction (e.g., LandmarkDetector, FaceAnalyser, HOG extraction).",
+
+      "description_ja": "動画・画像入力からAU予測に至るパスに関与するすべてのソースファイルとクラスを特定してください（例：LandmarkDetector, FaceAnalyser, HOG抽出関連など）。"
+    },
+
+    {
+      "step": 2,
+
+      "task": "Visual Mapping (Mermaid)",
+
+      "description_en": "Generate a Mermaid Sequence Diagram (for temporal flow) and a Data Flow Diagram (for data transformation stages).",
+
+      "description_ja": "Mermaid形式で、時系列の流れを示す『シーケンス図』と、データの変容プロセスを示す『データフロー図』を生成してください。"
+    },
+
+    {
+      "step": 3,
+
+      "task": "High-Fidelity Pseudo-code",
+
+      "description_en": "Write a detailed C-style pseudo-code representing the pipeline logic. This must include normalization steps, HOG/Geometry feature merging, and the prediction loop.",
+
+      "description_ja": "パイプラインのロジックを詳細なCスタイル擬似コードで記述してください。正規化ステップ、HOG/形状特徴の結合、予測ループを網羅する必要があります。"
+    }
+  ],
+
+  "constraints": {
+    "language": "Bilingual (English for logic, Japanese for explanation/comments)",
+
+    "granularity": "Include specific method names (e.g., 'Extract_HOG_features', 'Predict_AU') from the OpenFace codebase.",
+
+    "output_format": "All code and diagrams must be in one-button copyable blocks."
+  },
+
+  "context_for_llm": {
+    "user_profile": "Information Engineering student (Nagoya Institute of Technology). Skilled in Python/Java/C++. Familiar with ML but needs rigorous architectural clarity.",
+
+    "technical_debt": "Currently, recovered AU values slightly diverge from ground truth. We suspect a mismatch in coordinate normalization or median filtering logic."
+  }
+}

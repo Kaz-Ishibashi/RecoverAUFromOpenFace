@@ -1,0 +1,68 @@
+{
+  "report_type": "handover",
+  "project": "OpenFace RecoverAU Dump Comparison Phase 2",
+  "date": "2026-01-12",
+  "status": {
+    "overall": "SUCCESS",
+    "description": "Passed full-video verification (216 frames) with high precision. All AUs show Correlation > 0.99 for intensity."
+  },
+  "objectives": [
+    "Verify pipeline integrity across the full video length (not just start).",
+    "Add CP9 (Params Global) and CP10 (Params Local) for deeper PDM verification.",
+    "Resolve '8 frames only' matching issue in verification script."
+  ],
+  "checkpoints": {
+    "CP1-CP8": {
+      "status": "PASS",
+      "note": "Maintained passing status from Phase 1."
+    },
+    "CP9": {
+      "desc": "Params Global (Rigid)",
+      "status": "PASS",
+      "note": "Exact match (1e-6) for all 1296 values."
+    },
+    "CP10": {
+      "desc": "Params Local (Non-Rigid)",
+      "status": "PASS",
+      "note": "Exact match (1e-6) for all values."
+    }
+  },
+  "final_csv_verification": {
+    "status": "PASS",
+    "frames_matched": 216,
+    "criteria": "Correlation > 0.99, MAE < 0.1",
+    "results": [
+      { "au": "AU01_r", "corr": "1.0000", "mae": "0.0015" },
+      { "au": "AU02_r", "corr": "1.0000", "mae": "0.0006" },
+      { "au": "AU04_r", "corr": "0.9999", "mae": "0.0025" },
+      { "au": "AU05_r", "corr": "1.0000", "mae": "0.0006" },
+      { "au": "AU06_r", "corr": "1.0000", "mae": "0.0023" },
+      { "au": "AU07_r", "corr": "1.0000", "mae": "0.0025" },
+      { "au": "AU09_r", "corr": "0.9999", "mae": "0.0011" },
+      { "au": "AU10_r", "corr": "1.0000", "mae": "0.0025" },
+      { "au": "AU12_r", "corr": "1.0000", "mae": "0.0004" },
+      { "au": "AU14_r", "corr": "1.0000", "mae": "0.0004" },
+      { "au": "AU15_r", "corr": "1.0000", "mae": "0.0014" },
+      { "au": "AU17_r", "corr": "1.0000", "mae": "0.0022" },
+      { "au": "AU20_r", "corr": "0.9999", "mae": "0.0012" },
+      { "au": "AU23_r", "corr": "1.0000", "mae": "0.0010" },
+      { "au": "AU25_r", "corr": "1.0000", "mae": "0.0018" },
+      { "au": "AU26_r", "corr": "1.0000", "mae": "0.0021" },
+      { "au": "AU45_r", "corr": "1.0000", "mae": "0.0015" }
+    ]
+  },
+  "key_fixes": [
+    {
+      "topic": "Verification Script Merge",
+      "detail": "Fixed frame index mismatch (GT=1-based, Rec=0-based) and switched from timestamp to frame number for reliable merging."
+    },
+    {
+      "topic": "Expanded Checkpoints",
+      "detail": "Added CP9/CP10 to verify PDM parameter calculation (`CalcParams`), ensuring inputs to geometry descriptors are identical."
+    }
+  ],
+  "next_steps": [
+    "Proceed to Phase 3 if further robustness testing on different videos is required.",
+    "Merge changes into main branch."
+  ]
+}

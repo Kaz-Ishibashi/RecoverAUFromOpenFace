@@ -13,19 +13,19 @@
 //       reports and manuals, must cite at least one of the following works:
 //
 //       OpenFace 2.0: Facial Behavior Analysis Toolkit
-//       Tadas Baltrušaitis, Amir Zadeh, Yao Chong Lim, and Louis-Philippe Morency
+//       Tadas Baltruï¿½aitis, Amir Zadeh, Yao Chong Lim, and Louis-Philippe Morency
 //       in IEEE International Conference on Automatic Face and Gesture Recognition, 2018  
 //
 //       Convolutional experts constrained local model for facial landmark detection.
-//       A. Zadeh, T. Baltrušaitis, and Louis-Philippe Morency,
+//       A. Zadeh, T. Baltruï¿½aitis, and Louis-Philippe Morency,
 //       in Computer Vision and Pattern Recognition Workshops, 2017.    
 //
 //       Rendering of Eyes for Eye-Shape Registration and Gaze Estimation
-//       Erroll Wood, Tadas Baltrušaitis, Xucong Zhang, Yusuke Sugano, Peter Robinson, and Andreas Bulling 
+//       Erroll Wood, Tadas Baltruï¿½aitis, Xucong Zhang, Yusuke Sugano, Peter Robinson, and Andreas Bulling 
 //       in IEEE International. Conference on Computer Vision (ICCV),  2015 
 //
 //       Cross-dataset learning and person-specific normalisation for automatic Action Unit detection
-//       Tadas Baltrušaitis, Marwa Mahmoud, and Peter Robinson 
+//       Tadas Baltruï¿½aitis, Marwa Mahmoud, and Peter Robinson 
 //       in Facial Expression Recognition and Analysis Challenge, 
 //       IEEE International Conference on Automatic Face and Gesture Recognition, 2015 
 //
@@ -249,9 +249,7 @@ void RecorderCSV::WriteLine(int face_id, int frame_num, double time_stamp, bool 
 	}
 
 	// Output the detected 2D facial landmarks
-	if (output_2D_landmarks)
-	{
-		output_file.precision(1);
+	if (output_2D_landmarks) { output_file.precision(10);
 		// Output the 2D eye landmarks
 		for (auto lmk : landmarks_2D)
 		{
@@ -260,9 +258,7 @@ void RecorderCSV::WriteLine(int face_id, int frame_num, double time_stamp, bool 
 	}
 
 	// Output the detected 3D facial landmarks
-	if (output_3D_landmarks)
-	{
-		output_file.precision(1);
+	if (output_3D_landmarks) { output_file.precision(10);
 		// Output the 2D eye landmarks
 		for (auto lmk : landmarks_3D)
 		{

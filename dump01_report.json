@@ -1,0 +1,87 @@
+{
+  "report_type": "handover",
+  "project": "OpenFace RecoverAU Dump Comparison",
+  "date": "2026-01-12",
+  "status": {
+    "overall": "SUCCESS",
+    "description": "All checkpoints (CP1-CP8) are now passing verification with high precision (or within acceptable tolerance for float32/double conversions)."
+  },
+  "objectives": [
+    "Match RecoverAU.exe intermediate outputs with FeatureExtraction.exe ground truth.",
+    "Ensure identical Action Unit (AU) recovery from HOG/CSV files."
+  ],
+  "checkpoints": {
+    "CP1": {
+      "desc": "Raw Landmarks",
+      "status": "PASS",
+      "note": "Fixed frame ID offset (0 vs 1)"
+    },
+    "CP3": {
+      "desc": "HOG Descriptors",
+      "status": "PASS",
+      "note": "Tolerance 1e-3 allowed for float32/double conversion"
+    },
+    "CP4": {
+      "desc": "Geometric Descriptors",
+      "status": "PASS",
+      "note": "Exact match"
+    },
+    "CP5_Geom": {
+      "desc": "Geometric Median",
+      "status": "PASS",
+      "note": "Exact match"
+    },
+    "CP5_HOG": {
+      "desc": "HOG Median",
+      "status": "PASS",
+      "note": "Tolerance 1e-3"
+    },
+    "CP6": {
+      "desc": "Raw Prediction (Before Postprocess)",
+      "status": "PASS",
+      "note": "Exact match"
+    },
+    "CP7": {
+      "desc": "Offline Offset",
+      "status": "PASS",
+      "note": "Fixed by implementing Postprocessing (Phase 1.5) and alphabetical AU sorting"
+    },
+    "CP8": {
+      "desc": "Final AU Value",
+      "status": "PASS",
+      "note": "Fixed by dumping BEFORE smoothing and correcting frame index (0-based)"
+    }
+  },
+  "key_findings": [
+    {
+      "topic": "PostprocessPredictions",
+      "detail": "OpenFace re-computes prediction for initial frames (default 3000) using stabilized medians. RecoverAU must emulate this 'Phase 1.5' to match CP7/CP8."
+    },
+    {
+      "topic": "AU Iteration Order",
+      "detail": "OpenFace iterates std::map (alphabetical). RecoverAU iterates vector (static first). Must sort AU names in RecoverAU to match CP7 dump index."
+    },
+    {
+      "topic": "Success Flags",
+      "detail": "OpenFace only uses 'successful' frames for medians/offsets. RecoverAU must read 'success' column from CSV, not derive it."
+    },
+    {
+      "topic": "HOG Precision",
+      "detail": ".hog files are float32, internal processing is double. This causes ~1e-4 differences. Tolerance set to 1e-3."
+    }
+  ],
+  "implemented_changes": [
+    "Modified pipeline_test.ps1 to use -hogalign for FeatureExtraction.",
+    "Updated verify_pipeline.py with per-checkpoint tolerances.",
+    "Rewrote RecoverAU.cpp logic: Added Postprocessing phase, corrected AU sorting, aligned dump conditions/indices."
+  ],
+  "requirements": {
+    "environment": "Visual Studio 2026 (v143 toolset)",
+    "inputs": "Video file -> processed to .hog and .csv by FeatureExtraction",
+    "test_script": "pipeline_test.ps1"
+  },
+  "next_steps": [
+    "Run broader verification on multiple video samples if needed.",
+    "Consider merging RecoverAU changes into main calibration tool capabilities."
+  ]
+}

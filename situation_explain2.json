@@ -1,0 +1,75 @@
+{
+  "project_context": {
+    "name": "OpenFace AU Recovery System (RecoverAU)",
+    "current_phase": "Implementation",
+    "user_persona": "bash (University Student, Information Engineering)",
+    "user_skill_level": {
+      "cpp": "None (Requires copy-paste ready, error-free code)",
+      "python": "Proficient",
+      "env_setup": "Visual Studio environment fully configured with AI assistance"
+    }
+  },
+  "environment_state": {
+    "ide": "Visual Studio 2022 Community",
+    "platform": "x64 / Release",
+    "toolset": "v141 (VS 2017 C++ build tools)",
+    "sdk_version": "10.0.22621.0",
+    "dependencies": {
+      "opencv": "OpenCV 4.1.0 (opencv_world410.lib)",
+      "openface_core": "Built successfully (FaceAnalyser.lib, LandmarkDetector.lib, etc.)",
+      "boost": "Not used / Not configured",
+      "dlib": "Included in OpenFace/lib/3rdParty/dlib"
+    },
+    "project_settings": {
+      "include_dirs": [
+        "$(SolutionDir)lib\\local\\FaceAnalyser\\include",
+        "$(SolutionDir)lib\\local\\LandmarkDetector\\include",
+        "$(SolutionDir)lib\\local\\Utilities\\include",
+        "$(SolutionDir)lib\\3rdParty\\OpenCV\\include",
+        "$(SolutionDir)lib\\3rdParty\\dlib\\include"
+      ],
+      "preprocessor_defs": [
+        "NOMINMAX",
+        "OPENCV_TRAITS_ENABLE_DEPRECATED",
+        "_CONSOLE"
+      ]
+    }
+  },
+  "code_modifications": {
+    "file": "FaceAnalyser/include/FaceAnalyser.h",
+    "status": "Modified (The Surgery)",
+    "changes": [
+      "Changed visibility from 'private' to 'public' for:",
+      " - LandmarkDetector::PDM pdm;",
+      " - cv::Mat_<double> hog_desc_frame;",
+      " - cv::Mat_<double> geom_descriptor_frame;",
+      " - PredictCurrentAUs(int view);"
+    ]
+  },
+  "implementation_request": {
+    "task": "Generate 'RecoverAU.cpp' source code.",
+    "requirements": [
+      "Must be a single file solution.",
+      "Must handle dlib HOG file loading (deserialization) into 'cv::Mat'.",
+      "Must load 68-point landmarks from CSV (format: frame, x1, y1, ... x68, y68).",
+      "Must inject data into the exposed 'face_analyser' members.",
+      "Must output calculated AUs to a CSV file.",
+      "Must include error handling for file paths."
+    ],
+    "input_data_specs": {
+      "hog_file": "Legacy dlib serialized object (std::vector<matrix<double>> or similar)",
+      "landmark_file": "CSV file with 2D landmark coordinates"
+    },
+    "key_algorithm_steps": [
+      "1. Initialize FaceAnalyser with 'main_static_svms.txt'.",
+      "2. Read HOG binary file -> Convert to cv::Mat -> Assign to 'face_analyser.hog_desc_frame'.",
+      "3. Read Landmark CSV -> Convert to cv::Mat -> Calculate Params using 'face_analyser.pdm.CalcParams' -> Assign to 'face_analyser.geom_descriptor_frame'.",
+      "4. Call 'face_analyser.PredictCurrentAUs(0)'.",
+      "5. Print/Save results."
+    ]
+  },
+  "path_assumptions": {
+    "execution_dir": "$(SolutionDir)x64/Release",
+    "models_dir": "../../lib/local/FaceAnalyser/AU_predictors"
+  }
+}

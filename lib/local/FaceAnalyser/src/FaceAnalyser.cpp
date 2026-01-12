@@ -37,6 +37,7 @@
 
 // Local includes
 #include "Face_utils.h"
+#include "DumpLogger.h"
 
 using namespace FaceAnalysis;
 
@@ -307,6 +308,13 @@ void FaceAnalyser::PredictStaticAUsAndComputeFeatures(const cv::Mat& frame, cons
 
 void FaceAnalyser::AddNextFrame(const cv::Mat& frame, const cv::Mat_<float>& detected_landmarks, bool success, double timestamp_seconds, bool online)
 {
+	static bool dump_initialized = false;
+	if (!dump_initialized) {
+		INIT_DUMP("dump_openface.csv");
+		dump_initialized = true;
+	}
+
+	DUMP_MAT(frames_tracking, "CP1", detected_landmarks);
 
 	frames_tracking++;
 
@@ -319,6 +327,12 @@ void FaceAnalyser::AddNextFrame(const cv::Mat& frame, const cv::Mat_<float>& det
 	{
 
 		pdm.CalcParams(params_global, params_local, detected_landmarks);
+
+		// CP9: Params Global (Rigid)
+		for(int k=0; k<6; ++k) DUMP_VAL(frames_tracking, "CP9", k, params_global[k]);
+		
+		// CP10: Params Local (Non-Rigid)
+		DUMP_MAT(frames_tracking, "CP10", params_local);
 
 		// The aligned face requirement for AUs
 		AlignFaceMask(aligned_face_for_au, frame, detected_landmarks, params_global, pdm, triangulation, true, align_scale_au, align_width_au, align_height_au);
@@ -349,6 +363,15 @@ void FaceAnalyser::AddNextFrame(const cv::Mat& frame, const cv::Mat_<float>& det
 		params_local = cv::Mat_<float>(pdm.NumberOfModes(), 1, 0.0f);
 	}
 
+	if (success) {
+		cv::Scalar s = cv::sum(aligned_face_for_au);
+		DUMP_VAL(frames_tracking, "CP2", 0, s[0]);
+		DUMP_VAL(frames_tracking, "CP2", 1, s[1]);
+		DUMP_VAL(frames_tracking, "CP2", 2, s[2]);
+	} else {
+		DUMP_VAL(frames_tracking, "CP2", 0, 0);
+	}
+
 	if (aligned_face_for_output.channels() == 3 && out_grayscale)
 	{
 		cvtColor(aligned_face_for_output, aligned_face_for_output, cv::COLOR_BGR2GRAY);
@@ -360,6 +383,10 @@ void FaceAnalyser::AddNextFrame(const cv::Mat& frame, const cv::Mat_<float>& det
 	
 	// Store the descriptor
 	hog_desc_frame = hog_descriptor;
+
+	if (frames_tracking <= 5) {
+		DUMP_MAT(frames_tracking, "CP3", hog_desc_frame);
+	}
 
 	cv::Vec3d curr_orient(params_global[1], params_global[2], params_global[3]);
 	int orientation_to_use = GetViewId(this->head_orientations, curr_orient);
@@ -422,14 +449,22 @@ void FaceAnalyser::AddNextFrame(const cv::Mat& frame, const cv::Mat_<float>& det
 	
 	cv::hconcat(locs.t(), geom_descriptor_frame.clone(), geom_descriptor_frame);
 	
+	DUMP_MAT(frames_tracking, "CP4", geom_descriptor_frame);
+	
 	// A small speedup
 	if(frames_tracking % 2 == 1)
 	{
 		UpdateRunningMedian(this->geom_desc_hist, this->geom_hist_sum, this->geom_descriptor_median, geom_descriptor_frame, update_median, this->num_bins_geom, this->min_val_geom, this->max_val_geom);
+		DUMP_MAT(frames_tracking, "CP5_HOG", hog_desc_median);
+		DUMP_MAT(frames_tracking, "CP5_Geom", geom_descriptor_median);
 	}
 	
 	// Perform AU prediction	
 	AU_predictions_reg = PredictCurrentAUs(orientation_to_use);
+	
+	for (size_t i = 0; i < AU_predictions_reg.size(); ++i) {
+		DUMP_VAL(frames_tracking, "CP6", i, AU_predictions_reg[i].second);
+	}
 
 	// Add the reg predictions to the historic data
 	for (size_t au = 0; au < AU_predictions_reg.size(); ++au)
@@ -454,6 +489,8 @@ void FaceAnalyser::AddNextFrame(const cv::Mat& frame, const cv::Mat_<float>& det
 
 	for (size_t au = 0; au < AU_predictions_class.size(); ++au)
 	{
+		// CP11: Raw Classification Prediction
+		DUMP_VAL(frames_tracking, "CP11", (int)au, AU_predictions_class[au].second);
 
 		// Find the appropriate AU (if not found add it)		
 		// Only add if the detection was successful
@@ -611,6 +648,7 @@ void FaceAnalyser::ExtractAllPredictionsOfflineReg(std::vector<std::pair<std::st
 			{
 				offsets.push_back(0);
 			}
+			DUMP_VAL(-1, "CP7", (int)offsets.size()-1, offsets.back());
 		}
 		
 		aus_valid.push_back(au_good);
@@ -635,6 +673,7 @@ void FaceAnalyser::ExtractAllPredictionsOfflineReg(std::vector<std::pair<std::st
 				if(au_predictions[au].second[frame] > 5)
 					au_predictions[au].second[frame] = 5;
 				
+				DUMP_VAL(frame, "CP8", (int)au, au_predictions[au].second[frame]);
 			}
 			else
 			{
@@ -707,6 +746,17 @@ void FaceAnalyser::ExtractAllPredictionsOfflineClass(std::vector<std::pair<std::
 			}
 		}
 		au_predictions.push_back(std::pair<std::string, std::vector<double>>(au_name, au_vals));
+
+		// CP12: Final Classification (Smoothed & Thresholded)
+		// dumping per frame
+		int au_idx = std::distance(AU_predictions_class_all_hist.begin(), au_iter);
+		for(size_t f=0; f<au_vals.size(); ++f) {
+			if(this->valid_preds[f]) {
+				DUMP_VAL((int)f, "CP12", au_idx, au_vals[f]);
+			} else {
+				DUMP_VAL((int)f, "CP12", au_idx, 0.0);
+			}
+		}
 
 	}
 

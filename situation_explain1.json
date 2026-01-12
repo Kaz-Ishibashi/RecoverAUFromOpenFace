@@ -1,0 +1,76 @@
+{
+  "meta_info": {
+    "project_name": "OpenFace AU Recovery System (Legacy Data Restoration)",
+    "strategy": "Plan B: C++ Wrapper / Bridge Strategy",
+    "target_platform": "Windows (Visual Studio 2017/2019)",
+    "user_skill": "Python/Java proficient, C++ readable but limited implementation experience"
+  },
+  "objective": {
+    "primary": "Recover missing Action Units (AUs) from legacy HOG files (dlib FHOG) and Landmark CSVs.",
+    "method": "Bypass image processing by injecting pre-calculated data directly into a modified OpenFace 'FaceAnalyser' class via a custom C++ executable."
+  },
+  "architecture_requirements": {
+    "base_library": "OpenFace (FaceAnalyser.lib)",
+    "dependencies": [
+      "OpenCV (3.x or 4.x matched with existing binaries)",
+      "Boost (Filesystem, System)",
+      "TBB (Threading Building Blocks)",
+      "dlib (C++ Library, FHOG support)"
+    ],
+    "new_executable": "RecoverAU.exe (Console Application)"
+  },
+  "implementation_steps": [
+    {
+      "phase": "1. Environment Setup",
+      "task": "Configure Visual Studio solution to link FaceAnalyser.lib and dependencies. Mitigate 'DLL Hell' by reusing existing binaries where possible."
+    },
+    {
+      "phase": "2. OpenFace Modification (The Surgery)",
+      "target_file": "FaceAnalyser/include/FaceAnalyser.h",
+      "action": "Change visibility of critical members from 'private' to 'public' to allow external data injection.",
+      "details": "Members to expose: 'pdm', 'hog_desc_frame', 'geom_descriptor_frame', 'PredictCurrentAUs()'."
+    },
+    {
+      "phase": "3. Bridge Development",
+      "task": "Create 'RecoverAU.cpp' to:",
+      "subtasks": [
+        "Instantiate FaceAnalyser with 'AU_predictors/main_static_svms.txt'.",
+        "Load legacy HOG file (dlib format) into 'face_analyser.hog_desc_frame'.",
+        "Load Landmark CSV and calculate geometric parameters using 'face_analyser.pdm.CalcParams(...)'.",
+        "Inject result into 'face_analyser.geom_descriptor_frame'.",
+        "Call 'face_analyser.PredictCurrentAUs()' and output results."
+      ]
+    }
+  ],
+  "critical_code_modifications": {
+    "file": "FaceAnalyser/include/FaceAnalyser.h",
+    "changes": [
+      {
+        "description": "Move private members to public section",
+        "members": [
+          "LandmarkDetector::PDM pdm;",
+          "cv::Mat_<double> hog_desc_frame;",
+          "cv::Mat_<double> geom_descriptor_frame;",
+          "std::vector<std::pair<std::string, double>> PredictCurrentAUs(int view);"
+        ]
+      }
+    ]
+  },
+  "key_assets_location": {
+    "pdm_file": "FaceAnalyser/AU_predictors/In-the-wild_aligned_PDM_68.txt",
+    "model_config": "FaceAnalyser/AU_predictors/main_static_svms.txt",
+    "source_dir": "OpenFace/lib/local/FaceAnalyser/"
+  },
+  "known_risks": [
+    {
+      "risk": "Dynamic AU Calculation",
+      "status": "Partially mitigatable",
+      "note": "Requires continuous frame data. If data is sparse, 'Running Median' calculation in FaceAnalyser will be inaccurate. Prioritize Static AU recovery."
+    },
+    {
+      "risk": "HOG Memory Layout",
+      "status": "Check required",
+      "note": "Verify if legacy HOG is Row-Major or Column-Major. Dlib usually uses a specific memory layout (31 channels)."
+    }
+  ]
+}

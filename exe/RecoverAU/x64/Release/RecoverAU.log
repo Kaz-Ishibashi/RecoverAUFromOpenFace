@@ -1,0 +1,13 @@
+﻿  RecoverAU.cpp
+c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp : warning C4819: ファイルは、現在のコード ページ (932) で表示できない文字を含んでいます。データの損失を防ぐために、ファイルを Unicode 形式で保存してください。
+c:\users\kishibashi\nict\aurecov_openface\openface\lib\3rdparty\dlib\include\dlib\console_progress_indicator.h(153): warning C4834: 'nodiscard' 属性を持つ関数の戻り値を破棄しています
+c:\users\kishibashi\nict\aurecov_openface\openface\lib\3rdparty\dlib\include\dlib\image_transforms\morphological_operations.h : warning C4819: ファイルは、現在のコード ページ (932) で表示できない文字を含んでいます。データの損失を防ぐために、ファイルを Unicode 形式で保存してください。
+c:\users\kishibashi\nict\aurecov_openface\openface\exe\recoverau\recoverau.cpp(629): warning C4819: ファイルは、現在のコード ページ (932) で表示できない文字を含んでいます。データの損失を防ぐために、ファイルを Unicode 形式で保存してください。
+  0 個のファイルをコピーしました
+  コード生成しています。
+  コード生成が終了しました。
+  RecoverAU.vcxproj -> C:\Users\kishibashi\NICT\AURecov_openface\OpenFace\x64\Release\RecoverAU.exe
+  0 個のファイルをコピーしました
+  0 個のファイルをコピーしました
+  0 個のファイルをコピーしました
+  0 個のファイルをコピーしました
