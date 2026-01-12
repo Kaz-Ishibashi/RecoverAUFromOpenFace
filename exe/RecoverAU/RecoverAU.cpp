@@ -113,9 +113,10 @@ bool ReadHOGFrame(ifstream& fin, RawHOGFrame& frame) {
 
 
 // -------------------------------------------------------------------------------------------------------------------
-// Helper Function: Load Landmarks from CSV
+// Helper Function: Load Landmarks and Success flags from CSV
+// ランドマークとsuccessフラグをCSVからロード
 // -------------------------------------------------------------------------------------------------------------------
-bool LoadLandmarks(const string& csv_path, vector<Mat_<float>>& all_landmarks) {
+bool LoadLandmarks(const string& csv_path, vector<Mat_<float>>& all_landmarks, vector<bool>& success_flags) {
     cout << "Debug: Opening landmark file: " << csv_path << endl;
     ifstream file(csv_path);
     if (!file.is_open()) {
@@ -130,9 +131,10 @@ bool LoadLandmarks(const string& csv_path, vector<Mat_<float>>& all_landmarks) {
         return false;
     }
     
-    // Parse Header to find "x_0" and "y_0"
+    // Parse Header to find "x_0", "y_0", and "success"
     int x_start = -1;
     int y_start = -1;
+    int success_col = -1;
     {
         stringstream ss(line);
         string val_str;
@@ -144,6 +146,7 @@ bool LoadLandmarks(const string& csv_path, vector<Mat_<float>>& all_landmarks) {
             
             if (val_str == "x_0") x_start = col_idx;
             if (val_str == "y_0") y_start = col_idx;
+            if (val_str == "success") success_col = col_idx;
             col_idx++;
         }
     }
@@ -153,8 +156,13 @@ bool LoadLandmarks(const string& csv_path, vector<Mat_<float>>& all_landmarks) {
         cerr << "Header was: " << line.substr(0, 100) << "..." << endl;
         return false;
     }
+    
+    if (success_col == -1) {
+        cerr << "Warning: Could not find 'success' column. Assuming all frames are successful." << endl;
+    }
 
-    cout << "Debug: Found landmarks at x_start=" << x_start << ", y_start=" << y_start << endl;
+    cout << "Debug: Found landmarks at x_start=" << x_start << ", y_start=" << y_start 
+         << ", success_col=" << success_col << endl;
 
     int row_count = 0;
     while (getline(file, line)) {
@@ -189,9 +197,20 @@ bool LoadLandmarks(const string& csv_path, vector<Mat_<float>>& all_landmarks) {
         }
         
         all_landmarks.push_back(landmarks);
+        
+        // Read success flag (1 = success, 0 = failure)
+        // successフラグを読み取る (1=成功, 0=失敗)
+        bool success = true;  // Default to true if column not found
+        if (success_col != -1 && success_col < values.size()) {
+            success = (values[success_col] > 0.5);  // Treat > 0.5 as success
+        }
+        success_flags.push_back(success);
+        
         row_count++;
     }
-    cout << "Debug: Loaded " << row_count << " landmark frames." << endl;
+    
+    int success_count = std::count(success_flags.begin(), success_flags.end(), true);
+    cout << "Debug: Loaded " << row_count << " landmark frames (" << success_count << " successful)." << endl;
     return true;
 }
 
@@ -245,10 +264,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // 2. Load Landmarks
-    // cout << "Debug: Loading Landmarks file: " << landmark_file << endl;
+    // 2. Load Landmarks and Success Flags
+    // ランドマークとsuccessフラグをロード
     vector<Mat_<float>> landmarks_data;
-    if (!LoadLandmarks(landmark_file, landmarks_data)) {
+    vector<bool> csv_success_flags;  // Success flags from CSV file
+    if (!LoadLandmarks(landmark_file, landmarks_data, csv_success_flags)) {
         cerr << "Error: Failed to load landmarks." << endl;
         return 1;
     }
@@ -344,6 +364,13 @@ int main(int argc, char** argv) {
             vector<double> final_class;
         };
         vector<FrameResult> history;
+        
+        // Storage for initial frame descriptors (for postprocessing like OpenFace)
+        // 初期フレーム記述子の保存（OpenFaceと同様のポストプロセス用）
+        vector<cv::Mat_<double>> hog_desc_frames_init;
+        vector<cv::Mat_<double>> geom_descriptor_frames_init;
+        int frames_tracking_succ = 0;
+        int max_init_frames = 3000;  // Same as OpenFace
 
         // 4. Processing Loop
         // ========================================================================
@@ -455,9 +482,9 @@ int main(int argc, char** argv) {
             // Running Median Updates (Critical for Dynamic Models)
             // OpenFace logic: Update median every frame (or decimated) IF SUCCESSFUL
             
-            bool hog_success = hog_frames[i].good_frame;
-            bool land_success = (cv::countNonZero(shape_2d) > 0); // Check if we have valid landmarks
-            bool success = hog_success && land_success;
+            // Use success flag from CSV (matches OpenFace's face tracking success)
+            // CSVからのsuccessフラグを使用（OpenFaceの顔追跡成功に一致）
+            bool success = (i < csv_success_flags.size()) ? csv_success_flags[i] : true;
 
             face_analyser.frames_tracking++;
             
@@ -541,81 +568,211 @@ int main(int argc, char** argv) {
             res.final_reg = raw_reg_vals; 
             res.final_class = raw_class_vals;
             history.push_back(res);
+            
+            // Store initial frame descriptors for postprocessing (like OpenFace)
+            // 初期フレーム記述子を保存（OpenFaceと同様のポストプロセス用）
+            if (success && frames_tracking_succ < max_init_frames) {
+                hog_desc_frames_init.push_back(face_analyser.hog_desc_frame.clone());
+                geom_descriptor_frames_init.push_back(face_analyser.geom_descriptor_frame.clone());
+                frames_tracking_succ++;
+            }
         }
+        
+        // --- PHASE 1.5: POSTPROCESSING (Re-compute initial frame predictions with final medians) ---
+        // OpenFace does this in PostprocessPredictions() before offset calculation
+        // This is critical for matching CP7 offsets!
+        // OpenFaceはPostprocessPredictions()でオフセット計算前にこれを行う
+        cout << "Debug: Postprocessing " << frames_tracking_succ << " initial frames with final medians..." << endl;
+        {
+            int success_ind = 0;
+            int all_ind = 0;
+            
+            while(all_ind < (int)history.size() && success_ind < frames_tracking_succ) {
+                if(history[all_ind].success) {
+                    // Restore descriptors from stored initial frames
+                    face_analyser.hog_desc_frame = hog_desc_frames_init[success_ind].clone();
+                    face_analyser.geom_descriptor_frame = geom_descriptor_frames_init[success_ind].clone();
+                    
+                    // Fix orientation if needed
+                    if (face_analyser.hog_desc_frame.rows > face_analyser.hog_desc_frame.cols) {
+                        face_analyser.hog_desc_frame = face_analyser.hog_desc_frame.t();
+                    }
+                    if (face_analyser.geom_descriptor_frame.rows > face_analyser.geom_descriptor_frame.cols) {
+                        face_analyser.geom_descriptor_frame = face_analyser.geom_descriptor_frame.t();
+                    }
+                    
+                    // Re-compute predictions with final (stabilized) medians
+                    auto preds_r = face_analyser.PredictCurrentAUs(0);
+                    
+                    // Update history with new predictions
+                    for(size_t k = 0; k < preds_r.size() && k < history[all_ind].raw_reg.size(); ++k) {
+                        history[all_ind].raw_reg[k] = preds_r[k].second;
+                        history[all_ind].final_reg[k] = preds_r[k].second;
+                    }
+                    
+                    success_ind++;
+                }
+                all_ind++;
+            }
+        }
+        cout << "Debug: Postprocessing complete." << endl;
 
         // --- PHASE 2: OFFLINE CALIBRATION ---
+        // OpenFace's ExtractAllPredictionsOfflineReg iterates over AU_predictions_reg_all_hist
+        // which is a std::map<string, ...> - meaning it's sorted ALPHABETICALLY by AU name!
+        // We must iterate in the same order to match CP7/CP8 dump indices.
+        // OpenFaceのExtractAllPredictionsOfflineRegは std::map を反復するため
+        // AU名でアルファベット順にソートされている。同じ順序で反復する必要がある。
         
-        // A. Dynamic Shift (Baseline Subtraction) for REGRESSION
-        vector<string> dyn_au_names = face_analyser.AU_SVR_dynamic_appearance_lin_regressors.GetAUNames();
-        vector<double> cutoffs = face_analyser.AU_SVR_dynamic_appearance_lin_regressors.GetCutoffs();
-
-        int num_reg_aus = face_analyser.GetAURegNames().size();
+        // A. Get all AU names and sort them alphabetically
+        vector<string> all_au_names = face_analyser.GetAURegNames();
+        vector<string> sorted_au_names = all_au_names;
+        std::sort(sorted_au_names.begin(), sorted_au_names.end());
         
-        // For each AU
-        for (int au_idx = 0; au_idx < num_reg_aus; ++au_idx) {
-            string au_name = face_analyser.GetAURegNames()[au_idx];
-            
-            // Check if dynamic
-            bool is_dyn = false;
-            int dyn_idx = -1;
-            for(size_t d=0; d<dyn_au_names.size(); ++d) {
-                if (dyn_au_names[d] == au_name) {
-                    is_dyn = true;
-                    dyn_idx = d;
+        // Create mapping: sorted index -> original index (for accessing raw_reg)
+        // ソート済みインデックス -> 元のインデックスへのマッピング作成
+        vector<int> sorted_to_orig(sorted_au_names.size());
+        for(size_t sorted_idx = 0; sorted_idx < sorted_au_names.size(); ++sorted_idx) {
+            for(size_t orig_idx = 0; orig_idx < all_au_names.size(); ++orig_idx) {
+                if(sorted_au_names[sorted_idx] == all_au_names[orig_idx]) {
+                    sorted_to_orig[sorted_idx] = orig_idx;
                     break;
                 }
             }
+        }
+        
+        // B. Get dynamic AU names and cutoffs for offset calculation
+        vector<string> dyn_au_names = face_analyser.AU_SVR_dynamic_appearance_lin_regressors.GetAUNames();
+        vector<double> cutoffs = face_analyser.AU_SVR_dynamic_appearance_lin_regressors.GetCutoffs();
 
-            double offset = 0.0;
-            if (is_dyn && dyn_idx < cutoffs.size()) {
-                // Collect valid predictions
-                vector<double> valid_preds;
-                for(const auto& h : history) {
-                    if(h.success && au_idx < h.raw_reg.size()) valid_preds.push_back(h.raw_reg[au_idx]);
+        // C. Calculate offsets in sorted (alphabetical) order - matching OpenFace's map iteration
+        // OpenFaceのマップ反復に合わせて、ソートされた順序（アルファベット順）でオフセットを計算
+        vector<double> offsets;
+        int cp7_dump_idx = 0;
+        
+        for (size_t sorted_idx = 0; sorted_idx < sorted_au_names.size(); ++sorted_idx) {
+            string au_name = sorted_au_names[sorted_idx];
+            int orig_idx = sorted_to_orig[sorted_idx];  // For accessing raw_reg
+            
+            // DEBUG: Print AU name and indices for first few
+            if(sorted_idx < 5) {
+                cout << "Debug CP7: sorted_idx=" << sorted_idx << " au_name=" << au_name 
+                     << " orig_idx=" << orig_idx << endl;
+            }
+            
+            // Collect valid predictions for this AU
+            vector<double> au_good;
+            for(const auto& h : history) {
+                if(h.success && orig_idx < h.raw_reg.size()) {
+                    au_good.push_back(h.raw_reg[orig_idx]);
                 }
-                std::sort(valid_preds.begin(), valid_preds.end());
+            }
+            
+            // OpenFace logic (line 614-644):
+            // if(au_good.empty() || !dynamic) { offsets.push_back(0); } // No dump
+            // else { ... DUMP_VAL after offset calculation ... }
+            
+            // Check if this AU is dynamic
+            bool is_dynamic_param = true;  // In OpenFace, 'dynamic' param is true when called from FaceLandmarkVid
+            
+            if(au_good.empty() || !is_dynamic_param) {
+                offsets.push_back(0.0);
+                // No CP7 dump in this path
+            } else {
+                // This AU enters the else branch - will always get a CP7 dump
+                std::sort(au_good.begin(), au_good.end());
                 
-                double cutoff_ratio = cutoffs[dyn_idx];
-                if (cutoff_ratio != -1 && !valid_preds.empty()) {
-                     int idx = (int)(valid_preds.size() * cutoff_ratio);
-                     if (idx < valid_preds.size()) offset = valid_preds[idx];
+                // Find if this AU is in dynamic regressors
+                int au_id = -1;
+                for(size_t d = 0; d < dyn_au_names.size(); ++d) {
+                    if(au_name == dyn_au_names[d]) {
+                        au_id = d;
+                        break;
+                    }
                 }
-            }
-            
-            // CP7: Offset
-            DUMP_VAL(-1, "CP7", au_idx, offset);
-
-            // Apply Offset & Clipping
-            for(size_t i=0; i<history.size(); ++i) {
-                if (history[i].success) {
-                     double val = history[i].raw_reg[au_idx];
-                     if (is_dyn) val -= offset;
-                     
-                     if (val < 0) val = 0;
-                     if (val > 5) val = 5;
-                     
-                     history[i].final_reg[au_idx] = val;
+                
+                double offset = 0.0;
+                if(au_id != -1 && au_id < cutoffs.size() && cutoffs[au_id] != -1) {
+                    double cutoff_ratio = cutoffs[au_id];
+                    int idx = (int)(au_good.size() * cutoff_ratio);
+                    if(idx < au_good.size()) offset = au_good[idx];
+                    
+                    // DEBUG: Print cutoff lookup
+                    if(sorted_idx < 5) {
+                        cout << "  Found in dyn_au_names at " << au_id << ", cutoff=" << cutoff_ratio 
+                             << ", au_good.size=" << au_good.size() << ", idx=" << idx << ", offset=" << offset << endl;
+                    }
                 } else {
-                     history[i].final_reg[au_idx] = 0;
+                    // DEBUG: Print why offset is 0
+                    if(sorted_idx < 5) {
+                        cout << "  au_id=" << au_id << " (not found or cutoff=-1), offset=0" << endl;
+                    }
+                }
+                // else: offset stays 0.0
+                
+                offsets.push_back(offset);
+                
+                // CP7: Dump for ALL AUs that enter the else branch
+                // OpenFace dumps at line 643 which is AFTER the inner if/else
+                // CP7はelse分岐に入るすべてのAUでダンプ
+                DUMP_VAL(-1, "CP7", cp7_dump_idx, offset);
+                cp7_dump_idx++;
+            }
+        }
+        
+        // D. Apply offsets and dump CP8 (in sorted order, before smoothing)
+        // Note: offsets[sorted_idx] corresponds to AU at sorted_au_names[sorted_idx]
+        for (size_t sorted_idx = 0; sorted_idx < sorted_au_names.size(); ++sorted_idx) {
+            int orig_idx = sorted_to_orig[sorted_idx];
+            string au_name = sorted_au_names[sorted_idx];
+            
+            // Check if this AU is dynamic (for offset subtraction)
+            bool is_dyn = false;
+            for(const auto& dyn_name : dyn_au_names) {
+                if(dyn_name == au_name) {
+                    is_dyn = true;
+                    break;
                 }
             }
             
-            // Smoothing (Window=3)
+            double offset = offsets[sorted_idx];
+            
+            for(size_t frame_i = 0; frame_i < history.size(); ++frame_i) {
+                if(history[frame_i].success) {
+                    double val = history[frame_i].raw_reg[orig_idx];
+                    val = (val - offset) * 1.0;  // scaling = 1
+                    
+                    if(val < 0.0) val = 0.0;
+                    if(val > 5.0) val = 5.0;
+                    
+                    history[frame_i].final_reg[orig_idx] = val;
+                    
+                    // CP8: Dump with sorted_idx (to match OpenFace's au index)
+                    // OpenFace uses (int)au as index, where au is iteration counter
+                    // CP8はOpenFaceのauインデックス（反復カウンター）に合わせてsorted_idxを使用
+                    DUMP_VAL(frame_i + 1, "CP8", sorted_idx, val);  // +1 for FrameID offset
+                } else {
+                    history[frame_i].final_reg[orig_idx] = 0;
+                }
+            }
+        }
+        
+        // E. Smoothing (in sorted order)
+        for (size_t sorted_idx = 0; sorted_idx < sorted_au_names.size(); ++sorted_idx) {
+            int orig_idx = sorted_to_orig[sorted_idx];
+            
             int window = 3;
-            vector<double> smoothed(history.size());
+            vector<double> au_vals_tmp(history.size());
+            for(size_t i = 0; i < history.size(); ++i) {
+                au_vals_tmp[i] = history[i].final_reg[orig_idx];
+            }
             for(size_t i=(window-1)/2; i < history.size() - (window-1)/2; ++i) {
                 double sum = 0;
                 for(int w=-(window-1)/2; w <= (window-1)/2; ++w) {
-                     sum += history[i+w].final_reg[au_idx];
+                     sum += au_vals_tmp[i+w];
                 }
-                history[i].final_reg[au_idx] = sum / window;
+                history[i].final_reg[orig_idx] = sum / window;
             }
-            
-            // CP8: Final Value
-             for(size_t frame_i=0; frame_i<history.size(); ++frame_i) {
-                  if (history[frame_i].success) // Only dump valid frames or all? OpenFace dumps all processed I think.
-                     DUMP_VAL(frame_i + 1, "CP8", au_idx, history[frame_i].final_reg[au_idx]); // +1 for FrameID offset
-             }
         }
         
         // Write Final Output to CSV
